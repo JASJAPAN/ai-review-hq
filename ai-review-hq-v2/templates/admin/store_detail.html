@@ -1,0 +1,87 @@
+{% extends 'admin/base.html' %}
+{% block title %}{{ store.name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('dashboard') }}">← ダッシュボード</a></p>
+<h1>{{ store.name }}</h1>
+
+<div class="kpis">
+  <div class="kpi"><p class="v">{{ stats.n or 0 }}</p><p class="k">回答数</p></div>
+  <div class="kpi"><p class="v">{{ stats.avg or '–' }}</p><p class="k">平均評価</p></div>
+  <div class="kpi"><p class="v">{{ stats.routed_google or 0 }}</p><p class="k">Google誘導</p></div>
+  <div class="kpi"><p class="v">{{ stats.clicked or 0 }}</p><p class="k">Googleクリック</p></div>
+</div>
+
+<div class="panels">
+  <section class="panel">
+    <h2>アンケートURLとQR</h2>
+    <p class="url-box">{{ base_url }}/s/{{ store.slug }}</p>
+    <div class="row-actions">
+      <a class="btn" href="{{ url_for('survey', slug=store.slug) }}" target="_blank" rel="noopener">アンケートを開く</a>
+      <a class="btn" href="{{ url_for('qr', slug=store.slug) }}" download>QRコードをダウンロード</a>
+      <a class="btn" href="{{ url_for('export_csv', store_id=store.id) }}">CSVを出力</a>
+    </div>
+    <p class="note">QRを印刷して卓上POP・レジ横・会計伝票に設置してください。</p>
+  </section>
+
+  <section class="panel">
+    <h2>店舗設定</h2>
+    <form method="post" action="{{ url_for('store_settings', store_id=store.id) }}" class="settings">
+      <label>店舗名<input name="name" value="{{ store.name }}" required></label>
+      <label>Google口コミURL<input name="google_url" value="{{ store.google_url }}" required></label>
+      <label>アンケート冒頭のあいさつ文（任意）
+        <input name="welcome" value="{{ store.welcome }}" placeholder="未入力の場合は標準の文言を表示"></label>
+      <label>評価ポイント（1行に1つ・最大12個）
+        <textarea name="tags" rows="8">{{ tags_text }}</textarea></label>
+      <div class="two-col">
+        <label>Google誘導のしきい値
+          <select name="threshold">
+            {% for n in range(1,6) %}
+            <option value="{{ n }}" {% if store.threshold == n %}selected{% endif %}>★{{ n }}以上で誘導</option>
+            {% endfor %}
+          </select></label>
+        <label>誘導モード
+          <select name="guide_mode">
+            <option value="high_only" {% if store.guide_mode == 'high_only' %}selected{% endif %}>しきい値以上のみ誘導</option>
+            <option value="everyone" {% if store.guide_mode == 'everyone' %}selected{% endif %}>全員に誘導（推奨）</option>
+          </select></label>
+      </div>
+      <p class="note">Googleの口コミポリシーは「高評価の人だけに投稿を促す」運用（レビューゲーティング）を禁止しています。リスクを避ける場合は「全員に誘導」を選択してください。</p>
+      <button class="btn primary" type="submit">設定を保存</button>
+    </form>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>回答一覧{% if only_low %}（★3以下のみ）{% endif %}</h2>
+    {% if only_low %}
+    <a class="btn small" href="{{ url_for('store_detail', store_id=store.id) }}">すべて表示</a>
+    {% else %}
+    <a class="btn small" href="{{ url_for('store_detail', store_id=store.id, low=1) }}">★3以下だけ表示</a>
+    {% endif %}
+  </div>
+  {% if rows %}
+  <table>
+    <thead><tr><th>日時</th><th>星</th><th>ポイント</th><th>口コミ文 / 改善要望</th><th>ルート</th><th>クリック</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="{% if r.rating <= 2 %}row-low{% endif %}">
+        <td class="nowrap">{{ r.created_at[:16] | replace('T', ' ') }}</td>
+        <td>{{ '★' * r.rating }}</td>
+        <td>{{ r.tags }}</td>
+        <td class="review-cell">{{ r.review }}
+          {% if r.improve_text %}<p class="improve">改善要望：{{ r.improve_text }}</p>{% endif %}</td>
+        <td>{{ 'Google' if r.routed == 'google' else '自社完結' }}</td>
+        <td>{{ r.google_clicks }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">まだ回答がありません。</p>{% endif %}
+</section>
+
+<form method="post" action="{{ url_for('archive_store', store_id=store.id) }}"
+      onsubmit="return confirm('この店舗を非表示にしますか？（回答データは残ります）')">
+  <button class="btn danger small" type="submit">この店舗を非表示にする</button>
+</form>
+{% endblock %}

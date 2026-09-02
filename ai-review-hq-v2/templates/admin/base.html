@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{% block title %}本部管理{% endblock %}｜AI口コミアンケート</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='admin.css') }}">
+</head>
+<body>
+{% if session.get('admin') %}
+<nav class="topbar">
+  <a class="brand" href="{{ url_for('dashboard') }}">AI口コミアンケート<span>本部管理</span></a>
+  <div class="nav-right">
+    <a href="{{ url_for('add_store') }}">店舗を追加</a>
+    <form method="post" action="{{ url_for('logout') }}"><button>ログアウト</button></form>
+  </div>
+</nav>
+{% endif %}
+<main class="container">
+  {% with messages = get_flashed_messages() %}
+    {% for m in messages %}<p class="flash">{{ m }}</p>{% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

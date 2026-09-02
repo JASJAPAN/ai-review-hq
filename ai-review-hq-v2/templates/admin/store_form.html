@@ -1,0 +1,17 @@
+{% extends 'admin/base.html' %}
+{% block title %}店舗を追加{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('dashboard') }}">← ダッシュボード</a></p>
+<h1>店舗を追加</h1>
+<section class="panel narrow">
+  <form method="post" class="settings">
+    <label>店舗名<input name="name" required placeholder="例）川畜 鹿児島天文館店"></label>
+    <label>URL名（半角英数字とハイフン）
+      <input name="slug" required pattern="[a-z0-9][a-z0-9-]{1,40}" placeholder="例）kawachiku-tenmonkan"></label>
+    <label>Google口コミURL
+      <input name="google_url" required placeholder="https://g.page/r/... または maps.app.goo.gl/..."></label>
+    <p class="note">Googleビジネスプロフィール →「クチコミを増やす」で取得できる投稿用リンクを推奨します。追加後、店舗詳細で評価ポイントやしきい値を編集できます。</p>
+    <button class="btn primary" type="submit">追加する</button>
+  </form>
+</section>
+{% endblock %}

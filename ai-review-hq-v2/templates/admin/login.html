@@ -1,0 +1,14 @@
+{% extends 'admin/base.html' %}
+{% block title %}ログイン{% endblock %}
+{% block content %}
+<div class="login-card">
+  <h1>本部管理ログイン</h1>
+  <p class="sub">AI口コミアンケート 管理画面</p>
+  <form method="post">
+    <label>パスワード
+      <input type="password" name="password" required autofocus autocomplete="current-password">
+    </label>
+    <button class="btn primary" type="submit">ログイン</button>
+  </form>
+</div>
+{% endblock %}

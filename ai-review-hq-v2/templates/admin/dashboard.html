@@ -1,0 +1,61 @@
+{% extends 'admin/base.html' %}
+{% block title %}ダッシュボード{% endblock %}
+{% block content %}
+<h1>全店ダッシュボード</h1>
+
+<div class="kpis">
+  <div class="kpi"><p class="v">{{ totals.n or 0 }}</p><p class="k">総回答数</p></div>
+  <div class="kpi"><p class="v">{{ totals.avg or '–' }}</p><p class="k">平均評価</p></div>
+  <div class="kpi"><p class="v">{{ totals.routed_google or 0 }}</p><p class="k">Google誘導数</p></div>
+  <div class="kpi"><p class="v">{{ totals.clicked or 0 }}</p><p class="k">Googleクリック</p></div>
+</div>
+
+<div class="panels">
+  <section class="panel">
+    <h2>星の分布（全店）</h2>
+    {% set maxn = dist | max if dist | max > 0 else 1 %}
+    <div class="dist">
+      {% for i in range(5, 0, -1) %}
+      <div class="dist-row">
+        <span class="dist-label">★{{ i }}</span>
+        <div class="dist-bar"><span style="width: {{ (dist[i-1] / maxn * 100) | round(1) }}%"></span></div>
+        <span class="dist-n">{{ dist[i-1] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  <section class="panel">
+    <h2>選ばれている評価ポイント</h2>
+    {% if tag_ranking %}
+    <ol class="tag-rank">
+      {% for tag, n in tag_ranking %}<li>{{ tag }}<span>{{ n }}件</span></li>{% endfor %}
+    </ol>
+    {% else %}<p class="empty">まだ回答がありません。店舗ページのQRを設置すると、ここに集計が表示されます。</p>{% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <h2>店舗一覧</h2>
+  <table>
+    <thead><tr>
+      <th>店舗</th><th>回答数</th><th>直近7日</th><th>平均</th>
+      <th>Google誘導</th><th>クリック</th><th>低評価(★2以下)</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for s in stores %}
+      <tr>
+        <td><a href="{{ url_for('store_detail', store_id=s.id) }}">{{ s.name }}</a>
+            <span class="slug">/s/{{ s.slug }}</span></td>
+        <td>{{ s.responses }}</td>
+        <td>{{ s.last7 or 0 }}</td>
+        <td>{{ s.avg_rating or '–' }}</td>
+        <td>{{ s.routed_google or 0 }}</td>
+        <td>{{ s.clicked or 0 }}</td>
+        <td>{% if s.low_count %}<span class="warn">{{ s.low_count }}</span>{% else %}0{% endif %}</td>
+        <td><a class="btn small" href="{{ url_for('store_detail', store_id=s.id) }}">詳細</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

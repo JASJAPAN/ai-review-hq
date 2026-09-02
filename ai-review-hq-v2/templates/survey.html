@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>{{ store.name }}｜ご来店アンケート</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='survey.css') }}">
+</head>
+<body>
+<main class="wrap" id="app"
+      data-slug="{{ store.slug }}">
+
+  <!-- ===== アンケート本体 ===== -->
+  <section id="view-survey">
+    <header class="head">
+      <p class="store">{{ store.name }}</p>
+      <h1>ご来店ありがとうございました</h1>
+      <p class="lead">{{ store.welcome or '1分で終わるアンケートに、ご協力をお願いいたします。' }}</p>
+    </header>
+
+    <div class="step" id="step1">
+      <h2><span class="num">1</span>本日のご満足度は？</h2>
+      <div class="stars" role="radiogroup" aria-label="星評価">
+        {% for n in range(1,6) %}
+        <button type="button" class="star" data-value="{{ n }}" aria-label="星{{ n }}">★</button>
+        {% endfor %}
+      </div>
+      <p class="star-caption" id="star-caption">星をタップしてください</p>
+    </div>
+
+    <div class="step is-locked" id="step2">
+      <h2><span class="num">2</span>良かった点を選んでください<span class="opt">複数OK</span></h2>
+      <div class="chips">
+        {% for t in tags %}
+        <button type="button" class="chip" data-tag="{{ t }}">{{ t }}</button>
+        {% endfor %}
+      </div>
+      <label class="free">
+        <span>ご自由にお書きください（任意）</span>
+        <textarea id="free-text" rows="3" maxlength="300"
+          placeholder="例）黒豚のしゃぶしゃぶが柔らかくて驚きました"></textarea>
+      </label>
+    </div>
+
+    <div class="step is-locked" id="step3">
+      <h2><span class="num">3</span>口コミ文をつくる</h2>
+      <button type="button" class="btn ai" id="btn-generate">
+        <span class="label">AIで簡単に自動作成</span>
+        <span class="spinner" hidden></span>
+      </button>
+      <div id="review-area" hidden>
+        <textarea id="review" rows="7" maxlength="600" aria-label="口コミ文"></textarea>
+        <div class="review-tools">
+          <button type="button" class="btn ghost" id="btn-regen">書き直す</button>
+          <p class="hint">内容はご自身の体験に合わせて自由に編集できます。</p>
+        </div>
+        <button type="button" class="btn primary" id="btn-submit">この内容で登録する</button>
+      </div>
+      <p class="err" id="error" role="alert" hidden></p>
+    </div>
+  </section>
+
+  <!-- ===== 高評価：Google誘導 ===== -->
+  <section id="view-google" hidden>
+    <div class="done">
+      <p class="done-mark">✓</p>
+      <h1>ご回答ありがとうございました</h1>
+      <p class="lead">よろしければ、いま作成した文章をGoogleの口コミにもご投稿ください。<br>
+        文章はコピー済みです。Googleの画面で貼り付けるだけで投稿できます。</p>
+      <div class="copied-box">
+        <p id="final-review"></p>
+        <button type="button" class="btn ghost small" id="btn-copy">もう一度コピー</button>
+      </div>
+      <a class="btn primary" id="btn-google" href="#" target="_blank" rel="noopener">Googleで口コミを書く</a>
+      <p class="hint center">投稿するかどうか・内容・星の数は、お客様ご自身でお決めいただけます。</p>
+    </div>
+  </section>
+
+  <!-- ===== 低評価：自社完結 ===== -->
+  <section id="view-internal" hidden>
+    <div class="done">
+      <p class="done-mark">✓</p>
+      <h1>ご回答ありがとうございました</h1>
+      <p class="lead">貴重なご意見として、店舗の改善に必ず役立てます。<br>
+        よろしければ、もう少し詳しくお聞かせください。</p>
+      <textarea id="improve-text" rows="4" maxlength="500"
+        placeholder="至らなかった点・改善してほしい点など"></textarea>
+      <button type="button" class="btn primary" id="btn-improve">送信する</button>
+      <button type="button" class="btn ghost small" id="btn-skip">このまま終了する</button>
+    </div>
+  </section>
+
+  <section id="view-end" hidden>
+    <div class="done">
+      <p class="done-mark">✓</p>
+      <h1>投稿ありがとうございます</h1>
+      <p class="lead">またのご来店を心よりお待ちしております。</p>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <p>ご回答は店舗改善と集計のために利用します。AIが作成する文章は下書きです。必ずご本人が内容を確認・編集のうえご利用ください。</p>
+  </footer>
+</main>
+<script src="{{ url_for('static', filename='survey.js') }}"></script>
+</body>
+</html>

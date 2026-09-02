@@ -1,0 +1,94 @@
+:root{
+  --green:#173F35;      /* 深い椿葉グリーン：主要アクション */
+  --green-soft:#E4EEE9;
+  --amber:#E39B2D;      /* 星 */
+  --ink:#22282B;
+  --sub:#5C6B66;
+  --paper:#F2F5F1;
+  --card:#FFFFFF;
+  --line:#D8E0DA;
+  --err:#B3402F;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP",sans-serif;
+  background:var(--paper);color:var(--ink);line-height:1.7;
+}
+.wrap{max-width:480px;margin:0 auto;padding:28px 20px 48px}
+.head{margin-bottom:28px}
+.store{color:var(--green);font-weight:700;font-size:.95rem;letter-spacing:.04em}
+h1{font-size:1.45rem;font-weight:700;line-height:1.4;margin:.35em 0 .4em}
+.lead{color:var(--sub);font-size:.95rem}
+
+/* steps */
+.step{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:20px 18px;margin-bottom:16px;transition:opacity .25s}
+.step.is-locked{opacity:.45;pointer-events:none}
+.step h2{font-size:1.02rem;font-weight:700;display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.num{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+  border-radius:50%;background:var(--green);color:#fff;font-size:.85rem;flex:none}
+.opt{margin-left:auto;font-size:.75rem;font-weight:500;color:var(--sub)}
+
+/* stars — このページの主役 */
+.stars{display:flex;justify-content:center;gap:6px;padding:6px 0 2px}
+.star{font-size:2.6rem;line-height:1;background:none;border:none;color:#D4DAD3;
+  cursor:pointer;transition:transform .12s,color .12s;padding:4px;
+  -webkit-tap-highlight-color:transparent}
+.star.on{color:var(--amber)}
+.star:active{transform:scale(1.25)}
+.star-caption{text-align:center;color:var(--sub);font-size:.88rem;min-height:1.6em}
+
+/* chips */
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.chip{border:1.5px solid var(--line);background:#fff;border-radius:999px;
+  padding:8px 14px;font-size:.9rem;font-family:inherit;color:var(--ink);cursor:pointer;
+  transition:background .12s,border-color .12s,color .12s}
+.chip.on{background:var(--green);border-color:var(--green);color:#fff}
+.free span{display:block;font-size:.85rem;color:var(--sub);margin-bottom:6px}
+textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:12px;
+  font:inherit;font-size:.95rem;background:#fff;resize:vertical}
+textarea:focus,.chip:focus-visible,.star:focus-visible,.btn:focus-visible{
+  outline:3px solid rgba(23,63,53,.35);outline-offset:2px}
+
+/* buttons */
+.btn{display:block;width:100%;border:none;border-radius:12px;padding:15px;
+  font:inherit;font-size:1.02rem;font-weight:700;cursor:pointer;text-align:center;
+  text-decoration:none;transition:filter .12s}
+.btn:active{filter:brightness(.92)}
+.btn.primary{background:var(--green);color:#fff;margin-top:14px}
+.btn.ai{background:var(--green-soft);color:var(--green);border:1.5px solid var(--green);
+  position:relative}
+.btn.ghost{background:none;color:var(--green);border:1.5px solid var(--line)}
+.btn.small{width:auto;padding:8px 16px;font-size:.88rem;font-weight:500;margin:10px auto 0}
+.review-tools{display:flex;align-items:flex-start;gap:12px;margin-top:10px}
+.review-tools .btn{width:auto;padding:9px 16px;font-size:.9rem;flex:none}
+.hint{font-size:.8rem;color:var(--sub)}
+.hint.center{text-align:center;margin-top:12px}
+#review-area{margin-top:14px}
+.err{color:var(--err);font-size:.9rem;margin-top:10px}
+
+/* spinner */
+.spinner{position:absolute;right:16px;top:50%;width:18px;height:18px;margin-top:-9px;
+  border:2.5px solid rgba(23,63,53,.25);border-top-color:var(--green);border-radius:50%;
+  animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* 完了画面 */
+.done{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:32px 22px;text-align:center}
+.done-mark{width:56px;height:56px;margin:0 auto 14px;border-radius:50%;
+  background:var(--green);color:#fff;font-size:1.7rem;line-height:56px}
+.done h1{font-size:1.3rem}
+.done .lead{margin-bottom:18px}
+.done textarea{text-align:left;margin-bottom:4px}
+.copied-box{background:var(--paper);border-radius:10px;padding:14px;margin-bottom:16px;
+  text-align:left}
+.copied-box p{font-size:.92rem;white-space:pre-wrap}
+
+.foot{margin-top:28px;color:var(--sub);font-size:.75rem;line-height:1.7}
+
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
+}

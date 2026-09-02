@@ -1,0 +1,4 @@
+flask>=3.0
+gunicorn>=21.2
+qrcode[pil]>=7.4
+anthropic>=0.40
