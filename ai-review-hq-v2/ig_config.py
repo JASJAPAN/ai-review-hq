@@ -5,6 +5,7 @@ MS_TENANT_ID = E("MS_TENANT_ID", ""); MS_CLIENT_ID = E("MS_CLIENT_ID", ""); MS_C
 ONEDRIVE_DRIVE_ID = E("ONEDRIVE_DRIVE_ID", "b!YAZ0dzqGpEK5uErMsjvFWxs_a1tLuE9BoBGNNFPFr3k0R-1hLEe3RZlGxI7cKXLh")
 ONEDRIVE_FOLDER_ID = E("ONEDRIVE_FOLDER_ID", "01VJWSBSFT2KEFGMN5EJA3BII5AHU62RYH")   # HP掲載中
 IG_USER_ID = E("IG_USER_ID", ""); IG_ACCESS_TOKEN = E("IG_ACCESS_TOKEN", "")
+IG_API_BASE = E("IG_API_BASE", "https://graph.instagram.com/v21.0")   # Instagram Login方式。Facebook Login方式なら graph.facebook.com/v21.0
 IG_VERIFY_TOKEN = E("IG_VERIFY_TOKEN", "kuchikomi-hq-verify")
 PUBLIC_BASE_URL = E("PUBLIC_BASE_URL", "https://kuchikomi-hq.onrender.com").rstrip("/")
 DRY_RUN = E("IG_DRY_RUN", "true").lower() == "true"

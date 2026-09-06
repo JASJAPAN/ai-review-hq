@@ -1,6 +1,7 @@
 """Instagram Graph API: フィード投稿・ストーリーズ投稿・コメント返信・DM送信・通知"""
 import time, requests, ig_config as C
-BASE = "https://graph.facebook.com/v21.0"
+# Instagram API with Instagram Login（Facebookページ不要）
+BASE = C.IG_API_BASE
 
 def _publish(params):
     r = requests.post(f"{BASE}/{C.IG_USER_ID}/media", data={**params, "access_token": C.IG_ACCESS_TOKEN}, timeout=60)
