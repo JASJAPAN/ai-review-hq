@@ -1,6 +1,7 @@
 """口コミ1件を判定：返信文の生成 + 違反報告該当チェック（Google / ホットペッパー共通）"""
 import os, json
 import anthropic
+from review_policy_judge import judge as rule_judge
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
@@ -30,7 +31,7 @@ POLICY = {
 }
 
 
-def judge(platform, store, rating, comment, reviewer=""):
+def judge(platform, store, rating, comment, reviewer="", **extra):
     """返り値: dict(action, reply, report, report_reason, policy_clause, confidence)"""
     profile = STORE_PROFILE.get(store, "")
     if rating >= 4:
@@ -77,6 +78,18 @@ report=true の場合は、運営に提出する報告理由（100〜200字、�
     except Exception:
         d = {"reply": text, "report": False, "policy_clause": "", "report_reason": "", "confidence": 0}
     report = bool(d.get("report")) and float(d.get("confidence", 0)) >= 0.7
+
+    # ホットペッパーは掲載基準ベースのルール判定を優先（条項・要証憑・報告文の型が確定する）
+    if platform == "hotpepper" and rating <= 2:
+        r = rule_judge({"comment": comment, "reviewer": reviewer, "rating": rating,
+                        "external_id": extra.get("external_id"), "posted_at": extra.get("posted_at")})
+        if r["verdict"] == "report":
+            report = True
+            d["policy_clause"] = "／".join(r["clause_names"])
+            d["report_reason"] = r["draft"]
+            d["evidence_needed"] = r["evidence_needed"]
+            d["confidence"] = max(float(d.get("confidence", 0)), 0.8)
+    d.setdefault("evidence_needed", [])
     d["report"] = report
     d["action"] = "reply+report" if report else "reply"
     return d

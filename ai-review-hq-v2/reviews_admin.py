@@ -117,7 +117,10 @@ def import_reviews():
         rid = "hp:" + (item.get("external_id") or item.get("review_url") or "")
         if not rid.strip("hp:") or con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rid,)).fetchone():
             continue
-        j = judge("hotpepper", item["store"], int(item["rating"]), item.get("comment", ""), item.get("reviewer", ""))
+        j = judge("hotpepper", item["store"], int(item["rating"]), item.get("comment", ""), item.get("reviewer", ""),
+                  external_id=item.get("external_id"), posted_at=item.get("posted_at"))
+        if j.get("evidence_needed"):
+            j["report_reason"] += "\n\n【店側で用意する証憑】" + "／".join(j["evidence_needed"])
         auto = int(item["rating"]) >= int(os.environ.get("AUTO_POST_MIN_RATING", "6")) and not j["report"]
         upsert(con, review_id=rid, platform="hotpepper", store=item["store"], location="",
                reviewer=item.get("reviewer", ""), rating=int(item["rating"]), comment=item.get("comment", ""),
