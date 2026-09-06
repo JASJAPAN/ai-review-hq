@@ -28,6 +28,9 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "local-development-only-change-me")
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 
+from reviews_admin import reviews_bp  # 口コミ管制室（Google/ホットペッパー返信・違反報告）
+app.register_blueprint(reviews_bp)
+
 DB_PATH = Path(os.getenv("DATABASE_PATH", ROOT / "instance" / "reviews.db"))
 if not DB_PATH.is_absolute():
     DB_PATH = ROOT / DB_PATH
