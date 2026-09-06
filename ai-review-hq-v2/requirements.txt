@@ -5,3 +5,4 @@ anthropic>=0.40
 google-auth>=2.30
 google-auth-oauthlib>=1.2
 requests>=2.32
+Pillow>=10.0
