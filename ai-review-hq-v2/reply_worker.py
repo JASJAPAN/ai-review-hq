@@ -6,15 +6,21 @@ from review_judge import judge
 AUTO_MIN = int(os.environ.get("AUTO_POST_MIN_RATING", "6"))  # 6=全件承認制
 
 def stores():
+    """管理画面（/admin/google）で選んだ店舗を優先。無ければ環境変数 REVIEW_STORES"""
+    from google_reviews import _state, ACCOUNT_ID
+    st = _state().get("stores", [])
+    if st:
+        for s in st: yield s["name"], s["location"], s["account"]
+        return
     for item in os.environ.get("REVIEW_STORES", "").split(","):
         if ":" in item:
             name, loc = item.split(":", 1)
-            yield name.strip(), loc.strip()
+            yield name.strip(), loc.strip(), ACCOUNT_ID
 
 def main():
     con = db()
-    for store, loc in stores():
-        for rv in fetch_reviews(loc):
+    for store, loc, acct in stores():
+        for rv in fetch_reviews(loc, acct):
             rid = rv["reviewId"]
             if con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rid,)).fetchone():
                 continue
@@ -30,7 +36,7 @@ def main():
                    report_reason=j.get("report_reason", ""),
                    created_at=datetime.datetime.now().isoformat())
             if auto:
-                post_reply(loc, rid, j["reply"])
+                post_reply(loc, rid, j["reply"], acct)
                 mark_posted(con, rid, j["reply"])
 
 if __name__ == "__main__":

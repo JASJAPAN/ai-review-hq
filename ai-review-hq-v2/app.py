@@ -32,6 +32,8 @@ from reviews_admin import reviews_bp  # 口コミ管制室（Google/ホットペ
 app.register_blueprint(reviews_bp)
 from instagram_admin import instagram_bp  # SNS管制室（Instagram投稿・DM/コメント）
 app.register_blueprint(instagram_bp)
+from google_admin import google_bp  # Google連携（OAuth接続・店舗選択）
+app.register_blueprint(google_bp)
 
 DB_PATH = Path(os.getenv("DATABASE_PATH", ROOT / "instance" / "reviews.db"))
 if not DB_PATH.is_absolute():

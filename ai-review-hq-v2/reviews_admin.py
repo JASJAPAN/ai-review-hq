@@ -23,6 +23,7 @@ TPL = """
 <style>body{font-family:sans-serif;max-width:900px;margin:auto}.card{border:1px solid #ccc;padding:12px;margin:12px 0;border-radius:8px}
 .hp{border-left:6px solid #e60012}.gg{border-left:6px solid #4285f4}.rep{background:#fff3f3}.tag{font-size:12px;padding:2px 6px;border-radius:4px;background:#eee}</style>
 <h2>口コミ管制室</h2>
+<p><a href="{{url_for('google.index')}}">Google連携設定</a> ／ <a href="{{url_for('instagram.index')}}">SNS管制室</a></p>
 <p>承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件</p>
 
 <h3>承認待ち（返信内容の確認）</h3>
@@ -102,7 +103,8 @@ def report_reject(review_id):
 def run():
     """Render Cron Job から15分おき。Google口コミの取得〜自動返信"""
     if not _auth(): return "forbidden", 403
-    if not os.environ.get("GOOGLE_ACCOUNT_ID") or not os.environ.get("REVIEW_STORES"):
+    from google_reviews import _state
+    if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
         return "not configured yet", 200
     import reply_worker; reply_worker.main()
     return "ok", 200

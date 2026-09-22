@@ -12,10 +12,16 @@ STAR = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
 
 
 # ---------- Google ----------
+def _state():
+    try:
+        import json; return json.load(open(os.path.join(DATA_DIR, "google.json")))
+    except Exception:
+        return {}
+
 def _creds():
     c = Credentials(
         None,
-        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+        refresh_token=os.environ.get("GOOGLE_REFRESH_TOKEN") or _state().get("refresh_token"),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=os.environ["GOOGLE_OAUTH_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_OAUTH_CLIENT_SECRET"],
@@ -42,9 +48,10 @@ def discover():
             print(f"   {l['name']}  {l.get('title')}")
 
 
-def fetch_reviews(location):
+def fetch_reviews(location, account_id=None):
+    account_id = account_id or ACCOUNT_ID
     """未返信の口コミを返す。location は 'locations/xxxx'"""
-    url = f"{V4}/accounts/{ACCOUNT_ID}/{location}/reviews"
+    url = f"{V4}/accounts/{account_id}/{location}/reviews"
     out, token = [], None
     while True:
         r = requests.get(url, headers=_headers(), params={"pageSize": 50, "pageToken": token}).json()
@@ -56,8 +63,9 @@ def fetch_reviews(location):
             return out
 
 
-def post_reply(location, review_id, text):
-    url = f"{V4}/accounts/{ACCOUNT_ID}/{location}/reviews/{review_id}/reply"
+def post_reply(location, review_id, text, account_id=None):
+    account_id = account_id or ACCOUNT_ID or next((s["account"] for s in _state().get("stores", []) if s["location"] == location), "")
+    url = f"{V4}/accounts/{account_id}/{location}/reviews/{review_id}/reply"
     r = requests.put(url, headers=_headers(), json={"comment": text})
     r.raise_for_status()
     return r.json()
