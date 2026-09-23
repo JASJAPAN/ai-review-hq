@@ -13,12 +13,14 @@ H = {"X-Run-Token": TOKEN, "Content-Type": "application/json"}
 LOGIN_URL = "https://www.cms.hotpepper.jp/CLN/login/"
 
 def accounts():
+    """旧形式（HP_LOGIN_ID/HP_LOGIN_PASSWORD + HP_STORE_NAME）と番号付き（HP_n_NAME/ID/PW）を両方読む。ID重複は除外"""
     out = []
+    if os.environ.get("HP_LOGIN_ID") and os.environ.get("HP_LOGIN_PASSWORD"):
+        out.append({"name": os.environ.get("HP_STORE_NAME", "川畜天文館店"), "id": os.environ["HP_LOGIN_ID"], "pw": os.environ["HP_LOGIN_PASSWORD"]})
     for i in range(1, 10):
         n, u, p = os.environ.get(f"HP_{i}_NAME"), os.environ.get(f"HP_{i}_ID"), os.environ.get(f"HP_{i}_PW")
-        if n and u and p: out.append({"name": n, "id": u, "pw": p})
-    if not out and os.environ.get("HP_LOGIN_ID"):
-        out.append({"name": os.environ.get("HP_STORE_NAME", "川畜天文館店"), "id": os.environ["HP_LOGIN_ID"], "pw": os.environ["HP_LOGIN_PASSWORD"]})
+        if n and u and p and u not in [a["id"] for a in out]: out.append({"name": n, "id": u, "pw": p})
+    print("対象店舗:", [a["name"] for a in out])
     return out
 
 def api(path, method="GET", body=None):
