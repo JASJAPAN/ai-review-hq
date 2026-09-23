@@ -9,12 +9,16 @@ reviews_bp = Blueprint("reviews", __name__, url_prefix="/admin/replies")
 def _auth():
     return request.headers.get("X-Run-Token") == os.environ.get("REPLY_RUN_TOKEN")
 
-API_PATHS = ("/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks")
+API_PATHS = ("/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks", "/admin/replies/hp_config", "/admin/replies/recon", "/admin/replies/notify")
 
 @reviews_bp.before_request
 def _guard():
     """管理画面は既存アプリのログインセッションを流用。API系はトークン認証"""
     if request.path.startswith(API_PATHS):
+        # GET の設定画面/偵察表示と POST の設定保存は管理者セッション、それ以外はトークン
+        if request.headers.get("X-Run-Token") or request.path.endswith(("/run", "/import", "/tasks", "/tasks/done", "/notify")):
+            return None
+        if not session.get("admin"): return redirect(url_for("login", next=request.path))
         return None
     if not session.get("admin"):
         return redirect(url_for("login", next=request.path))
@@ -23,7 +27,7 @@ TPL = """
 <style>body{font-family:sans-serif;max-width:900px;margin:auto}.card{border:1px solid #ccc;padding:12px;margin:12px 0;border-radius:8px}
 .hp{border-left:6px solid #e60012}.gg{border-left:6px solid #4285f4}.rep{background:#fff3f3}.tag{font-size:12px;padding:2px 6px;border-radius:4px;background:#eee}</style>
 <h2>口コミ管制室</h2>
-<p><a href="{{url_for('google.index')}}">Google連携設定</a> ／ <a href="{{url_for('instagram.index')}}">SNS管制室</a></p>
+<p><a href="{{url_for('google.index')}}">Google連携設定</a> ／ <a href="{{url_for('reviews.hp_settings')}}">ホットペッパー設定</a> ／ <a href="{{url_for('instagram.index')}}">SNS管制室</a></p>
 <p>承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件</p>
 
 <h3>承認待ち（返信内容の確認）</h3>
@@ -156,3 +160,83 @@ def tasks_done():
         con.execute("UPDATE reviews SET report_status='reported' WHERE review_id=?", (d["review_id"],))
     con.commit()
     return "ok"
+
+
+# ---------- ホットペッパー無人ワーカー用（設定・偵察結果・通知） ----------
+import json as _json
+from pathlib import Path as _P
+_HP_CFG = _P(os.environ.get("DATA_DIR", ".")) / "hp_config.json"
+_HP_RECON = _P(os.environ.get("DATA_DIR", ".")) / "hp_recon.json"
+_HP_DEFAULT = {
+    "login_url": "", "sel_login_id": "input[type=text], input[type=email]", "sel_login_pw": "input[type=password]",
+    "sel_login_submit": "button[type=submit], input[type=submit]",
+    "reviews_url": "", "sel_item": "", "sel_reviewer": "", "sel_rating": "", "rating_regex": "", "sel_comment": "", "sel_link": "a",
+    "sel_reply_textarea": "", "sel_reply_submit": "", "sel_reply_confirm": "",
+    "stores": [],
+}
+def _hp_load():
+    try: return {**_HP_DEFAULT, **_json.loads(_HP_CFG.read_text())}
+    except Exception: return dict(_HP_DEFAULT)
+
+@reviews_bp.route("/hp_config", methods=["GET", "POST"])
+def hp_config():
+    if request.method == "GET":
+        if not _auth(): return "forbidden", 403
+        return jsonify(_hp_load())
+    cfg = _hp_load()
+    for k in _HP_DEFAULT:
+        if k == "stores":
+            cfg["stores"] = [{"name": n.strip(), "reviews_url": u.strip()} for n, u in
+                             zip(request.form.getlist("store_name"), request.form.getlist("store_url")) if n.strip() and u.strip()]
+        elif k in request.form: cfg[k] = request.form[k].strip()
+    _HP_CFG.parent.mkdir(parents=True, exist_ok=True); _HP_CFG.write_text(_json.dumps(cfg, ensure_ascii=False, indent=1))
+    return redirect(url_for("reviews.hp_settings"))
+
+@reviews_bp.route("/recon", methods=["GET", "POST"])
+def recon():
+    if request.method == "POST":
+        if not _auth(): return "forbidden", 403
+        _HP_RECON.parent.mkdir(parents=True, exist_ok=True); _HP_RECON.write_text(_json.dumps(request.get_json(force=True), ensure_ascii=False))
+        return "ok"
+    try: d = _json.loads(_HP_RECON.read_text())
+    except Exception: return "まだ偵察結果がありません。Cron「cron-hotpepper-recon」を手動実行してください。"
+    html = f"<style>body{{font-family:sans-serif;max-width:1100px;margin:auto}}pre{{background:#f5f5f5;padding:8px;font-size:11px;max-height:400px;overflow:auto}}img{{max-width:100%;border:1px solid #ccc}}</style><h2>ホットペッパー偵察結果 {d.get('at','')[:16]}</h2>"
+    if d.get("error"): html += f"<p style='color:red'>エラー: {d['error']}</p>"
+    for pg in d.get("pages", []):
+        html += f"<h3>{pg['name']} — {pg['url']}</h3><img src='data:image/png;base64,{pg['png']}'><pre>{pg['outline'].replace('<','&lt;')}</pre>"
+    return html + f"<p><a href='{url_for('reviews.hp_settings')}'>設定へ</a></p>"
+
+@reviews_bp.route("/notify", methods=["POST"])
+def notify_ep():
+    if not _auth(): return "forbidden", 403
+    from ig_instagram import notify as _n; _n(request.get_json(force=True).get("text", "")); return "ok"
+
+_HP_TPL = """
+<style>body{font-family:sans-serif;max-width:900px;margin:auto}label{display:block;margin-top:10px;font-size:13px;color:#444}input{width:100%;box-sizing:border-box;padding:6px}
+fieldset{margin-top:16px}</style>
+<h2>ホットペッパー無人ワーカー 設定</h2>
+<p><a href="{{url_for('reviews.recon')}}">偵察結果を見る</a> ／ <a href="{{url_for('reviews.index')}}">口コミ管制室へ</a></p>
+<form method="post" action="{{url_for('reviews.hp_config')}}">
+<fieldset><legend>ログイン</legend>
+<label>ログインページURL<input name="login_url" value="{{c.login_url}}"></label>
+<label>IDの入力欄セレクタ<input name="sel_login_id" value="{{c.sel_login_id}}"></label>
+<label>パスワード入力欄セレクタ<input name="sel_login_pw" value="{{c.sel_login_pw}}"></label>
+<label>ログインボタンセレクタ<input name="sel_login_submit" value="{{c.sel_login_submit}}"></label></fieldset>
+<fieldset><legend>口コミ一覧（店舗ごと）</legend>
+{% for s in (c.stores + [{'name':'','reviews_url':''}]) %}<label>店舗名 / 口コミ管理ページURL
+<input name="store_name" value="{{s.name}}" placeholder="南薩農場" style="width:30%"> <input name="store_url" value="{{s.reviews_url}}" placeholder="https://..." style="width:68%"></label>{% endfor %}
+<label>口コミ1件の要素<input name="sel_item" value="{{c.sel_item}}" placeholder="例: li.review-item"></label>
+<label>投稿者名<input name="sel_reviewer" value="{{c.sel_reviewer}}"></label>
+<label>星評価の要素<input name="sel_rating" value="{{c.sel_rating}}"></label>
+<label>星評価の抽出正規表現（1〜5を1グループ目に）<input name="rating_regex" value="{{c.rating_regex}}" placeholder="例: 総合\\s*([1-5])"></label>
+<label>本文<input name="sel_comment" value="{{c.sel_comment}}"></label>
+<label>詳細/返信ページへのリンク<input name="sel_link" value="{{c.sel_link}}"></label></fieldset>
+<fieldset><legend>返信</legend>
+<label>返信テキストエリア<input name="sel_reply_textarea" value="{{c.sel_reply_textarea}}"></label>
+<label>送信ボタン<input name="sel_reply_submit" value="{{c.sel_reply_submit}}"></label>
+<label>確認画面の確定ボタン（あれば）<input name="sel_reply_confirm" value="{{c.sel_reply_confirm}}"></label></fieldset>
+<button style="margin-top:16px;font-size:16px">保存</button></form>
+"""
+@reviews_bp.route("/hp_settings")
+def hp_settings():
+    return render_template_string(_HP_TPL, c=_hp_load())
