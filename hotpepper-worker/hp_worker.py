@@ -93,7 +93,8 @@ def post_reply(page, task):
 def recon(page, acct):
     shots = []
     def snap(name):
-        shots.append({"name": name, "url": page.url, "outline": outline(page), "png": base64.b64encode(page.screenshot(full_page=True)).decode()})
+        shots.append({"name": name, "url": page.url, "outline": outline(page, 300),
+                      "png": base64.b64encode(page.screenshot(type="jpeg", quality=45, full_page=False)).decode()})
     snap("top_menu"); open_review_list(page); snap("review_list")
     items = scrape(page, acct["name"])
     shots.append({"name": f"scraped_{len(items)}件", "url": page.url, "outline": json.dumps(items[:5], ensure_ascii=False, indent=1), "png": ""})
@@ -126,7 +127,7 @@ def main():
             except Exception as e:
                 traceback.print_exc(); errors.append(f"{acct['name']}: {str(e)[:200]}")
                 try: api("/recon", "POST", {"at": datetime.datetime.now().isoformat(), "error": f"{acct['name']}: {str(e)[:500]}",
-                         "pages": [{"name": "error", "url": page.url, "outline": outline(page, 300), "png": base64.b64encode(page.screenshot(full_page=True)).decode()}]})
+                         "pages": [{"name": "error", "url": page.url, "outline": outline(page, 300), "png": base64.b64encode(page.screenshot(type="jpeg", quality=45, full_page=False)).decode()}]})
                 except Exception: pass
             finally:
                 ctx.close()

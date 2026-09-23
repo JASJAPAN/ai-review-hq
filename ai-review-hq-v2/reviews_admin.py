@@ -12,6 +12,13 @@ def _auth():
 API_PATHS = ("/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks", "/admin/replies/hp_config", "/admin/replies/recon", "/admin/replies/notify")
 
 @reviews_bp.before_request
+def _raise_limit():
+    # 偵察結果（スクショ入り）だけアップロード上限を緩める（アプリ全体は64KBのまま）
+    if request.path.startswith(("/admin/replies/recon", "/admin/replies/import")):
+        try: request.max_content_length = 16 * 1024 * 1024
+        except Exception: pass
+
+@reviews_bp.before_request
 def _guard():
     """管理画面は既存アプリのログインセッションを流用。API系はトークン認証"""
     if request.path.startswith(API_PATHS):
@@ -203,7 +210,7 @@ def recon():
     html = f"<style>body{{font-family:sans-serif;max-width:1100px;margin:auto}}pre{{background:#f5f5f5;padding:8px;font-size:11px;max-height:400px;overflow:auto}}img{{max-width:100%;border:1px solid #ccc}}</style><h2>ホットペッパー偵察結果 {d.get('at','')[:16]}</h2>"
     if d.get("error"): html += f"<p style='color:red'>エラー: {d['error']}</p>"
     for pg in d.get("pages", []):
-        html += f"<h3>{pg['name']} — {pg['url']}</h3><img src='data:image/png;base64,{pg['png']}'><pre>{pg['outline'].replace('<','&lt;')}</pre>"
+        html += f"<h3>{pg['name']} — {pg['url']}</h3><img src='data:image/jpeg;base64,{pg['png']}'><pre>{pg['outline'].replace('<','&lt;')}</pre>"
     return html + f"<p><a href='{url_for('reviews.hp_settings')}'>設定へ</a></p>"
 
 @reviews_bp.route("/notify", methods=["POST"])
