@@ -35,7 +35,7 @@ TPL = """
 .hp{border-left:6px solid #e60012}.gg{border-left:6px solid #4285f4}.rep{background:#fff3f3}.tag{font-size:12px;padding:2px 6px;border-radius:4px;background:#eee}</style>
 <h2>口コミ管制室</h2>
 <p><a href="{{url_for('google.index')}}">Google連携設定</a> ／ <a href="{{url_for('reviews.hp_settings')}}">ホットペッパー設定</a> ／ <a href="{{url_for('instagram.index')}}">SNS管制室</a></p>
-<p>承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件</p>
+<p>判定待ち {{new_count}}件 ／ 承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件</p>
 
 <h3>承認待ち（返信内容の確認）</h3>
 {% for r in pending %}
@@ -79,7 +79,8 @@ def index():
         pending=q("SELECT * FROM reviews WHERE reply_status='pending' ORDER BY created_at DESC"),
         reports=q("SELECT * FROM reviews WHERE report=1 AND report_status='todo' ORDER BY created_at DESC"),
         hp_todo=q("SELECT * FROM reviews WHERE platform='hotpepper' AND reply_status='todo'"),
-        posted=q("SELECT * FROM reviews WHERE reply_status='posted' ORDER BY posted_at DESC LIMIT 20"))
+        posted=q("SELECT * FROM reviews WHERE reply_status='posted' ORDER BY posted_at DESC LIMIT 20"),
+        new_count=con.execute("SELECT COUNT(*) FROM reviews WHERE reply_status='new'").fetchone()[0])
 
 @reviews_bp.route("/<path:review_id>/approve", methods=["POST"])
 def approve(review_id):
@@ -114,35 +115,68 @@ def report_reject(review_id):
 def run():
     """Render Cron Job から15分おき。Google口コミの取得〜自動返信"""
     if not _auth(): return "forbidden", 403
+    judged = judge_pending(budget_sec=15)
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
-        return "not configured yet", 200
+        return f"google not configured; judged {judged}", 200
     import reply_worker; reply_worker.main()
-    return "ok", 200
+    return f"ok; judged {judged}", 200
+
+# ---------- 取り込み（即時保存）と判定（バックグラウンド）を分離 ----------
+import threading, time
+_judge_lock = threading.Lock()
+
+def judge_pending(budget_sec=20, limit=50):
+    """reply_status='new' の行を1件ずつ判定して pending/todo に進める。時間予算内で打ち切り。"""
+    if not _judge_lock.acquire(blocking=False): return 0
+    try:
+        con = db(); t0 = time.time(); n = 0
+        rows = con.execute("SELECT * FROM reviews WHERE reply_status='new' ORDER BY created_at LIMIT ?", (limit,)).fetchall()
+        for r in rows:
+            if time.time() - t0 > budget_sec: break
+            try:
+                j = judge(r["platform"], r["store"], r["rating"], r["comment"] or "", r["reviewer"] or "",
+                          external_id=r["review_id"].replace("hp:", "", 1), posted_at="")
+                reason = j.get("report_reason", "")
+                if j.get("evidence_needed"): reason += "\n\n【店側で用意する証憑】" + "／".join(j["evidence_needed"])
+                auto = r["rating"] >= int(os.environ.get("AUTO_POST_MIN_RATING", "6")) and not j["report"]
+                status = ("todo" if r["platform"] == "hotpepper" else "auto") if auto else "pending"
+                con.execute("""UPDATE reviews SET reply=?, reply_status=?, report=?, policy_clause=?, report_reason=?, report_status=?
+                               WHERE review_id=?""", (j["reply"], status, int(j["report"]), j.get("policy_clause", ""), reason,
+                                                       "todo" if j["report"] else "", r["review_id"]))
+                con.commit(); n += 1
+            except Exception as e:
+                # 1回目は 'new' のまま次回リトライ、2回目も失敗したら pending に落として人が見る
+                again = (r["reply"] or "").startswith("(判定失敗")
+                con.execute("UPDATE reviews SET reply=?, reply_status=? WHERE review_id=?",
+                            (f"(判定失敗: {str(e)[:100]})", "pending" if again else "new", r["review_id"])); con.commit()
+                if not again: time.sleep(2)
+        return n
+    finally:
+        _judge_lock.release()
+
+def _judge_bg():
+    # 残りがある限り回し続ける（1回20秒×繰り返し、最大10分）
+    for _ in range(30):
+        if judge_pending(budget_sec=20) == 0: break
 
 @reviews_bp.route("/import", methods=["POST"])
 def import_reviews():
-    """拡張機能がホットペッパー管理画面から取り込んだ口コミを登録 → 判定
-    body: [{"store":"南薩農場","reviewer":"...","rating":2,"comment":"...","review_url":"...","external_id":"..."}]"""
+    """拡張機能/ワーカーが取り込んだ口コミを保存だけして即返す。判定はバックグラウンド。
+    body: [{"store":"南薩農場","reviewer":"...","rating":2,"comment":"...","review_url":"...","external_id":"...","posted_at":"..."}]"""
     if not _auth(): return "forbidden", 403
     con = db(); n = 0
     for item in request.get_json(force=True):
         rid = "hp:" + (item.get("external_id") or item.get("review_url") or "")
-        if not rid.strip("hp:") or con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rid,)).fetchone():
+        if rid == "hp:" or con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rid,)).fetchone():
             continue
-        j = judge("hotpepper", item["store"], int(item["rating"]), item.get("comment", ""), item.get("reviewer", ""),
-                  external_id=item.get("external_id"), posted_at=item.get("posted_at"))
-        if j.get("evidence_needed"):
-            j["report_reason"] += "\n\n【店側で用意する証憑】" + "／".join(j["evidence_needed"])
-        auto = int(item["rating"]) >= int(os.environ.get("AUTO_POST_MIN_RATING", "6")) and not j["report"]
         upsert(con, review_id=rid, platform="hotpepper", store=item["store"], location="",
                reviewer=item.get("reviewer", ""), rating=int(item["rating"]), comment=item.get("comment", ""),
-               review_url=item.get("review_url", ""), reply=j["reply"],
-               reply_status="todo" if auto else "pending",
-               report=int(j["report"]), policy_clause=j.get("policy_clause", ""),
-               report_reason=j.get("report_reason", ""), created_at=datetime.datetime.now().isoformat())
+               review_url=item.get("review_url", ""), reply="", reply_status="new",
+               created_at=item.get("posted_at") or datetime.datetime.now().isoformat())
         n += 1
-    return jsonify({"imported": n})
+    if n: threading.Thread(target=_judge_bg, daemon=True).start()
+    return jsonify({"imported": n, "judging": "background"})
 
 @reviews_bp.route("/tasks", methods=["GET"])
 def tasks():

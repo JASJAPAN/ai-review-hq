@@ -73,7 +73,8 @@ def post_reply(location, review_id, text, account_id=None):
 
 # ---------- DB（Google / ホットペッパー共通） ----------
 def db():
-    con = sqlite3.connect(DB_PATH)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("""CREATE TABLE IF NOT EXISTS reviews(
         review_id TEXT PRIMARY KEY,      -- google: reviewId / hotpepper: 'hp:'+口コミURL or ID
