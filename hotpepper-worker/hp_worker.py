@@ -17,7 +17,7 @@ def accounts():
     out = []
     if os.environ.get("HP_LOGIN_ID") and os.environ.get("HP_LOGIN_PASSWORD"):
         out.append({"name": os.environ.get("HP_STORE_NAME", "川畜天文館店"), "id": os.environ["HP_LOGIN_ID"], "pw": os.environ["HP_LOGIN_PASSWORD"]})
-    for i in range(1, 10):
+    for i in range(1, 31):  # 最大30店舗まで
         n, u, p = os.environ.get(f"HP_{i}_NAME"), os.environ.get(f"HP_{i}_ID"), os.environ.get(f"HP_{i}_PW")
         if n and u and p and u not in [a["id"] for a in out]: out.append({"name": n, "id": u, "pw": p})
     print("対象店舗:", [a["name"] for a in out])
@@ -133,9 +133,63 @@ def main():
                 except Exception: pass
             finally:
                 ctx.close()
+        # --- 承認済みの違反報告を自動送信（ホットペッパーのみ。Googleは手動のまま） ---
+        t = api("/tasks") if MODE == "run" else {}
+        approved_hp = [r for r in t.get("reports", []) if r.get("platform") == "hotpepper"]
+        sent = 0
+        for acct in accts:
+            mine = [r for r in approved_hp if r["store"] == acct["name"]]
+            if not mine:
+                continue
+            ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900})
+            page = ctx.new_page()
+            try:
+                login(page, acct)
+                for rp in mine:
+                    try:
+                        open_review_list(page, unreplied_only=False)
+                        ext = rp["review_id"].replace("hp:", "", 1)
+                        el = find_item(page, ext, rp)
+                        if el is None:
+                            errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）")
+                            continue
+                        link = el.get_by_text("違反報告", exact=False)
+                        if not link.count():
+                            link = el.get_by_text("通報", exact=False)
+                        if not link.count():
+                            errors.append(f"{acct['name']} 違反報告: 報告リンクが見つからない（{rp['review_id']}）。画面仕様の確認が必要")
+                            continue
+                        link.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                        box = page.locator("textarea")
+                        if box.count():
+                            box.first.fill(rp.get("report_reason", "")[:800])
+                        btn = page.get_by_role("button", name=re.compile("送信|報告する|確認"))
+                        if not btn.count():
+                            btn = page.locator("input[type='button'][value*='送信'], input[type='submit']")
+                        btn.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                        confirm = page.get_by_role("button", name=re.compile("送信|報告する"))
+                        if not confirm.count():
+                            confirm = page.locator("input[type='button'][onclick*='doRegist']")
+                        if confirm.count():
+                            confirm.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                        api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
+                        sent += 1
+                    except Exception as e:
+                        errors.append(f"{acct['name']} 違反報告失敗（{rp['review_id']}）: {str(e)[:120]}")
+                        try: api("/recon", "POST", {"at": datetime.datetime.now().isoformat(), "error": f"report {rp['review_id']}: {str(e)[:300]}",
+                                 "pages": [{"name": "report_error", "url": page.url, "outline": outline(page, 300), "png": base64.b64encode(page.screenshot(type="jpeg", quality=45, full_page=False)).decode()}]})
+                        except Exception: pass
+            finally:
+                ctx.close()
         browser.close()
-        reports = api("/tasks").get("reports", []) if MODE == "run" else []
-        if reports: notify(f"[ホットペッパー/Google] 違反報告の実行待ちが{len(reports)}件あります。管理画面で確認してください。")
+        if sent:
+            notify(f"[ホットペッパー] 承認済みの違反報告を{sent}件送信しました。")
+        pend = t.get("reports_pending_count", 0)
+        if pend:
+            notify(f"[口コミ管制室] 承認待ちの違反報告候補が{pend}件あります。管理画面で承認/却下してください。")
+        g_manual = [r for r in t.get("reports", []) if r.get("platform") == "google"]
+        if g_manual:
+            notify(f"[Google] 承認済みの違反報告が{len(g_manual)}件あります。Googleは自動送信非対応のため、クチコミ管理ツールから手動報告してください。")
         if errors: notify("[ホットペッパー] " + " / ".join(errors)); sys.exit(1)
 
 if __name__ == "__main__":
