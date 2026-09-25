@@ -138,7 +138,8 @@ def main():
         approved_hp = [r for r in t.get("reports", []) if r.get("platform") == "hotpepper"]
         sent = 0
         for acct in accts:
-            mine = [r for r in approved_hp if r["store"] == acct["name"]]
+            limit = int(os.environ.get("REPORT_DAILY_LIMIT", "3"))  # 大量一斉報告を避け審査通過率を守る
+            mine = [r for r in approved_hp if r["store"] == acct["name"]][:limit]
             if not mine:
                 continue
             ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900})
