@@ -36,6 +36,9 @@ TPL = """
 <h2>口コミ管制室</h2>
 <p><a href="{{url_for('google.index')}}">Google連携設定</a> ／ <a href="{{url_for('reviews.hp_settings')}}">ホットペッパー設定</a> ／ <a href="{{url_for('instagram.index')}}">SNS管制室</a></p>
 <p>判定待ち {{new_count}}件 ／ 承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件</p>
+<form method="post" action="{{url_for('reviews.bulk_regenerate_pending')}}" style="display:inline"
+      onsubmit="return confirm('承認待ちの返信 {{pending|length}}件を、新しいトーンでAIに作り直させます。作り直し後は自動確定されます。よろしいですか？')">
+  <button>返信を全件作り直す（新トーン）</button></form>
 <form method="post" action="{{url_for('reviews.bulk_approve_replies')}}" style="display:inline"
       onsubmit="return confirm('承認待ちの返信 {{pending|length}}件をすべて確定します。よろしいですか？')">
   <button>返信を全件確定する</button></form>
@@ -49,6 +52,8 @@ TPL = """
   <span class="tag">{{r.platform}}</span> <b>{{r.store}}</b> ★{{r.rating}} {{r.reviewer}} <small>{{r.created_at[:16]}}</small>
   {% if r.review_url %}<a href="{{r.review_url}}" target="_blank">口コミを開く</a>{% endif %}
   <p style="background:#f5f5f5;padding:8px">{{r.comment or "（本文なし）"}}</p>
+  <form method="post" action="{{url_for('reviews.regenerate', review_id=r.review_id)}}" style="display:inline">
+    <button type="submit">作り直す（新トーン）</button></form>
   <form method="post" action="{{url_for('reviews.approve', review_id=r.review_id)}}">
     <textarea name="reply" rows="5" style="width:100%">{{r.reply}}</textarea><br>
     <button type="submit">{{'この内容でGoogleに投稿' if r.platform=='google' else 'この内容で確定（拡張機能が投稿）'}}</button>
@@ -107,6 +112,26 @@ def approve(review_id):
 def skip(review_id):
     con = db(); con.execute("UPDATE reviews SET reply_status='skipped' WHERE review_id=?", (review_id,)); con.commit()
     return redirect(url_for("reviews.index"))
+
+@reviews_bp.route("/<path:review_id>/regenerate", methods=["POST"])
+def regenerate(review_id):
+    """この1件をAIに新しいトーンで作り直させる（判定待ちに戻す→即時再生成を試行）"""
+    con = db()
+    con.execute("UPDATE reviews SET reply='', reply_status='new' WHERE review_id=?", (review_id,))
+    con.commit()
+    judge_pending(budget_sec=15, limit=5)
+    return redirect(url_for("reviews.index"))
+
+
+@reviews_bp.route("/bulk/regenerate_pending", methods=["POST"])
+def bulk_regenerate_pending():
+    """承認待ちの返信をすべて新しいトーンで作り直す。残りは15分ごとの/runが順次処理"""
+    con = db()
+    con.execute("UPDATE reviews SET reply='', reply_status='new' WHERE reply_status='pending'")
+    con.commit()
+    judge_pending(budget_sec=20, limit=50)
+    return redirect(url_for("reviews.index"))
+
 
 @reviews_bp.route("/bulk/approve_replies", methods=["POST"])
 def bulk_approve_replies():
