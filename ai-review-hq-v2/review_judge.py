@@ -35,13 +35,12 @@ def judge(platform, store, rating, comment, reviewer="", **extra):
     """返り値: dict(action, reply, report, report_reason, policy_clause, confidence)"""
     profile = STORE_PROFILE.get(store, "")
     if rating >= 4:
-        tone = "感謝を中心に。本文で触れられた料理や体験を具体的に拾い、再来店を自然に促す。"
+        tone = "感謝を中心に。本文で触れられた料理や体験を具体的に拾い、うれしい気持ちを素直に伝えて受け止める。来店を促す表現は入れない。"
     elif rating == 3:
         tone = "感謝しつつ、至らなかった点があれば真摯に受け止める姿勢。言い訳はしない。"
     else:
         tone = "まず謝罪。言い訳をせず、指摘を一つひとつ具体的に受け止める。締めは『いただいたご意見をもとに改善に努め、より良いお店づくりに励みます』という改善の姿勢で結ぶ。お客様に連絡・問い合わせ・再訪の負担を求める表現は使わない。"
-    platform_note = ("ホットペッパー経由の予約客が多いので、締めは『またのご予約をお待ちしております』系の自然な一言。"
-                     if platform == "hotpepper" else "")
+    platform_note = ""  # 媒体を問わず、来店・予約・連絡を促す締めは使わない
 
     prompt = f"""あなたは飲食店「{store}」の店長兼、口コミ運用の責任者です。
 以下の口コミについて2つの作業をしてください。
@@ -56,15 +55,17 @@ def judge(platform, store, rating, comment, reviewer="", **extra):
 作業1: 返信文を書く
 - {tone}
 - {platform_note}
-- 80〜180字。丁寧だが定型文っぽくない、人が書いた温度感。
+- 感想を受け止める「感想型」で書く。「またのご来店をお待ちしております」「ぜひまたお越しください」「ご予約をお待ちしております」などの来店・予約を促す定型句、「店舗まで直接ご連絡ください」「お問い合わせください」などお客様に行動を求める表現はすべて禁止。締めは感謝の言葉、または「より良いお店づくりに励みます」のような自店の姿勢で結ぶ。
+- 100〜200字。丁寧だが定型文っぽくない、人が書いた温度感。
 - 「AI」「自動」という言葉、絵文字・記号の乱用は禁止。本文にない事実を作らない。
 
 作業2: 違反報告に該当するか判定する
+対象は星2以下の口コミのみ。星3以上はどんな内容でも report=false にしてください。
 以下のポリシーに「明確に」該当する場合だけ report=true にしてください。
 低評価・厳しい意見・主観的な不満は違反ではありません。該当条項を具体的に指摘できない場合は必ず report=false。
 {POLICY[platform]}
 
-report=true の場合は、運営に提出する報告理由（100〜200字、事実ベース、感情を入れない、該当条項名を明記）を書いてください。
+report=true の場合は、運営に提出する報告理由（250〜400字）を書いてください。構成: ①冒頭で該当するガイドライン条項名を明記 → ②口コミ本文のどの記載が条項のどの要件に該当するかを、本文を短く引用しながら具体的に示す → ③掲載継続による店舗・閲覧者への影響を1文 → ④「上記ガイドラインに基づき、非掲載のご検討をお願いいたします」で結ぶ。事実ベースで感情表現は入れない。証拠資料の提出は行わない前提で、本文の記載内容だけで判断できる論理構成にする。
 
 出力は次のJSONのみ（前後に説明やコードフェンス不要）:
 {{"reply": "返信文", "report": true/false, "policy_clause": "該当条項名 or 空", "report_reason": "報告理由 or 空", "confidence": 0.0〜1.0}}"""
@@ -77,7 +78,7 @@ report=true の場合は、運営に提出する報告理由（100〜200字、�
         d = json.loads(text)
     except Exception:
         d = {"reply": text, "report": False, "policy_clause": "", "report_reason": "", "confidence": 0}
-    report = bool(d.get("report")) and float(d.get("confidence", 0)) >= 0.7
+    report = bool(d.get("report")) and float(d.get("confidence", 0)) >= 0.7 and rating <= 2  # 違反報告は星2以下のみ
 
     # ホットペッパーは掲載基準ベースのルール判定を優先（条項・要証憑・報告文の型が確定する）
     if platform == "hotpepper" and rating <= 2:
