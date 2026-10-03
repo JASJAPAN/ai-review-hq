@@ -411,7 +411,8 @@ class Session:
             raise Abort("確認画面の登録ボタンを特定できなかったため、登録していません（ログのボタン一覧を確認してください）")
         moved = self._register(btn)
         self.snap("plan_result")
-        done = p.locator(".notification").filter(has_text=re.compile("完了")).count() > 0
+        # 本番では、登録後にプラン一覧へ戻り「プランを更新しました。」の帯が出る（2026/10/3 確認）
+        done = p.locator(".notification").filter(has_text=re.compile("更新しました|登録しました|完了")).count() > 0
         if self._verify_plan(kind, plan_id, new):
             return "登録しました（管理画面で反映を確認済み）" + ("" if done else "。完了画面の表示は想定と違いました")
         if not moved:

@@ -29,6 +29,9 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
 DB_PATH = DATA_DIR / "media.db"
 SEED = Path(__file__).parent / "media_stores.json"
 STALE_MIN = 60   # これ以上「実行中」のままなら落ちたとみなす
+# 自動反映したあと、公開ページに出るまで時間がかかる（2026/10/3：管理画面では変わったが公開ページは旧名のまま）。
+# この日数のあいだは、同じズレを新しい項目として出し直さない
+GRACE_DAYS = int(os.environ.get("MEDIA_WRITTEN_GRACE_DAYS", "3"))
 
 
 def _now(): return datetime.now(JST).isoformat(timespec="seconds")
@@ -258,6 +261,9 @@ def run_store(con, run_id, store):
         raise RuntimeError("ホットペッパーのページから何も読み取れませんでした")
     skip = {r["sig"] for r in con.execute(   # 「対象外」と「承認済み・反映待ち」は作り直さない
         "SELECT sig FROM media_items WHERE store_key=? AND status IN ('ignored','approved')", (store["key"],))}
+    cutoff = (datetime.now(JST) - timedelta(days=GRACE_DAYS)).isoformat(timespec="seconds")
+    written = {r["sig"]: r["closed_at"] for r in con.execute(
+        "SELECT sig, closed_at FROM media_items WHERE store_key=? AND status='written' ORDER BY closed_at", (store["key"],))}
     rows = []
     items = verify_extras(D.diff_all(hp, hs), hp)
     hp.pop("course_text", None); hs.pop("course_text", None)
@@ -265,6 +271,11 @@ def run_store(con, run_id, store):
         sig = _sig(store["key"], item)
         if sig in skip:
             continue
+        if sig in written:
+            if written[sig] >= cutoff:
+                continue   # 自動反映済み。公開ページへの反映待ち
+            item["note"] = (f"{written[sig][:10]} に自動反映しましたが、公開ページにまだ出ていません。"
+                            "ヒトサラの管理画面で登録内容を確認してください。 " + (item.get("note") or "")).strip()
         rows.append((run_id, store["key"], sig, item["level"], item["kind"], item["title"], item["hp"], item["hs"],
                      item["field"], item["note"], item.get("ref", ""),
                      json.dumps(make_drafts(item, store), ensure_ascii=False), "open", _now()))
@@ -432,6 +443,7 @@ TPL_STORE = """{% extends "admin/base.html" %}{% block title %}{{s.name}}｜媒�
 {% if s.last_error %}<p class="flash">前回エラー：{{s.last_error}}</p>{% endif %}
 {% if snap %}{% for side, label in (('hp', 'ホットペッパー'), ('hs', 'ヒトサラ')) %}{% for w in snap[side].get('warnings', []) %}
 <p class="flash">読み取りの注意（{{label}}）：{{w}}</p>{% endfor %}{% endfor %}{% endif %}
+{% if waiting %}<p class="note">自動反映済みで、公開ページへの反映を待っている項目が {{waiting}} 件あります（{{grace}}日たっても公開ページに出なければ、もう一度ズレとして表示します）。</p>{% endif %}
 {% if not items and s.checked_at %}<div class="panel"><p class="empty">ズレはありません。</p></div>{% endif %}
 {% for it in items %}
 <div class="panel">
@@ -520,7 +532,10 @@ def store(key):
     closed = con.execute("SELECT * FROM media_items WHERE store_key=? AND status NOT IN ('open','approved','failed') "
                          "ORDER BY closed_at DESC LIMIT 30", (key,)).fetchall()
     snaps = {r["side"]: json.loads(r["data"]) for r in con.execute("SELECT * FROM media_snaps WHERE store_key=?", (key,))}
-    return render_template_string(TPL_STORE, s=s, items=items, closed=closed, labels=D.LEVEL_LABEL,
+    cutoff = (datetime.now(JST) - timedelta(days=GRACE_DAYS)).isoformat(timespec="seconds")
+    waiting = con.execute("SELECT COUNT(*) FROM media_items WHERE store_key=? AND status='written' AND closed_at>=?",
+                          (key, cutoff)).fetchone()[0]
+    return render_template_string(TPL_STORE, s=s, items=items, closed=closed, labels=D.LEVEL_LABEL, waiting=waiting, grace=GRACE_DAYS,
                                   snap=snaps if len(snaps) == 2 else None)
 
 
