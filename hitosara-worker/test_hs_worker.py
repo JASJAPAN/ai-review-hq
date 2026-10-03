@@ -68,12 +68,15 @@ def test_run_mode_writes_everything_and_publishes_only_intro(browser, site, monk
 def test_dry_mode_changes_nothing_but_records_screens(browser, site, monkeypatch):
     monkeypatch.setattr(W, "MODE", "dry")
     before = {k: dict(v) for k, v in site["plans"].items()}
-    res, pages, _ = run(browser, [T(1, "intro_catch", text="新キャッチ"), T(2, "plan_name", NAME_OLD, NAME_NEW)])
+    res, pages, log = run(browser, [T(1, "intro_catch", text="新キャッチ"), T(2, "plan_name", NAME_OLD, NAME_NEW)])
     assert all(ok for ok, _ in res.values())
     assert site["intro"]["catch"] == "旧キャッチ" and site["intro_draft"] is None and site["reflect_calls"] == []
     assert site["plans"] == before and site["plan_updates"] == 0
     names = [p["name"] for p in pages]
     assert any("intro_edit" in n for n in names) and any("plan_confirm" in n for n in names)
+    line = next(l for l in log if "確認画面のボタン" in l)                       # dry でも、どのボタンを押す予定かを記録する
+    assert "★「この内容で登録する」name=update_plan" in line and "「検索」name=search（別のフォーム）" in line
+    assert "★「内容を修正する」" not in line
     assert all(p["png"] for p in pages)
 
 
@@ -147,3 +150,14 @@ def test_recon_reports_selector_checks(browser, site, monkeypatch):
     assert by["reserve_plan_list"]["#list-plan-publish tr.list-item a[href*='/admin/plan/register/']"]["count"] == 3
     assert by["reserve_plan_edit"]["form.validate input[name=confirm]"]["first"]["value"] == "この内容で確認する"
     assert by["reserve_plan_edit"]["#plan_available"]["first"]["checked"] is True
+
+
+def test_register_button_is_not_guessed_when_ambiguous(browser, site, monkeypatch):
+    """確認画面に種類の違う登録系ボタンが2つあったら、どちらも押さずに中止する"""
+    monkeypatch.setattr(W, "MODE", "run")
+    orig = W.BTN_JS
+    monkeypatch.setattr(W, "BTN_JS", orig.replace("return", "return").replace(
+        "}))", "})).concat([{name:'delete_plan', label:'登録を取り消す', in_form:true, action:'', shown:true}])"))
+    res, _, log = run(browser, [T(1, "plan_name", NAME_OLD, NAME_NEW)])
+    assert res[1][0] is False and "登録ボタンを特定できなかった" in res[1][1]
+    assert site["plans"]["103"]["name"] == NAME_OLD and site["plan_updates"] == 0

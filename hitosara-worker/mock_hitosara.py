@@ -162,7 +162,8 @@ def make_app():
         st["pending"] = {"id": f["plan[plan_id]"], "name": f["plan[plan_name]"], "price": int(f["plan[plan_price]"]),
                          "sale": int(f["plan[discounted_price]"]), "pub": int(f["plan[plan_publish_flag]"])}
         d = st["pending"]
-        return f"""<h1>プランの更新（内容確認）</h1><p>以下の内容でプランを更新します。よろしいですか？</p>
+        return f"""<form action="/admin/search/" method="get"><input type="submit" name="search" value="検索"></form>
+          <h1>プランの更新（内容確認）</h1><p>以下の内容でプランを更新します。よろしいですか？</p>
           <p>掲載状態：{'掲載' if d['pub'] else '非掲載'}</p><p class="confirm-plan-name">{d['name']}</p>
           <p>定価 {d['price']:,}円 ／ 販売価格 {d['sale']:,}円</p>
           <form action="/admin/plan/update/" method="post"><input type="hidden" name="csrf_token" value="t">
