@@ -1,0 +1,15 @@
+[
+  {"key": "umidori", "name": "うみどり 天文館店", "hp_url": "https://www.hotpepper.jp/strJ003474523/", "hs_id": "0020004633", "use_reserve": 1, "enabled": 1, "note": "試行店舗。ライトプラン・即時予約利用中"},
+  {"key": "sumiroan", "name": "炭炉庵 天文館店", "hp_url": "https://www.hotpepper.jp/strJ003474520/", "hs_id": "0020007868", "use_reserve": 1, "enabled": 0, "note": ""},
+  {"key": "izumi", "name": "いずみ精肉店 天文館店", "hp_url": "https://www.hotpepper.jp/strJ003737215/", "hs_id": "0004043601", "use_reserve": 1, "enabled": 0, "note": "店舗一覧Excelでは川畜の欄にあるID"},
+  {"key": "satsumakogen", "name": "さつま高原 天文館店", "hp_url": "https://www.hotpepper.jp/strJ003763206/", "hs_id": "0031691548", "use_reserve": 0, "enabled": 0, "note": "契約外の自動掲載（ぐるなび由来と見られる）。直す場所はぐるなび側の可能性"},
+  {"key": "gattonero", "name": "ガットネーロ 鹿児島天文館店", "hp_url": "", "hs_id": "0006145010", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "totoniku", "name": "魚ト肉 鹿児島天文館店", "hp_url": "", "hs_id": "0020007942", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "kirishima", "name": "きりしま牧場 鹿児島天文館店", "hp_url": "", "hs_id": "0020001150", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "sakurajima", "name": "さクラジマ 鹿児島天文館店", "hp_url": "", "hs_id": "0010000634", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "satsuno", "name": "薩農組合 鹿児島本店", "hp_url": "", "hs_id": "0006145013", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "kakoiya", "name": "囲屋 天文館店", "hp_url": "", "hs_id": "0020003550", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "uotori", "name": "うおとり 鹿児島中央駅店", "hp_url": "", "hs_id": "0020007871", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録。同住所に三島畜産（ヒトサラのページは未確認）"},
+  {"key": "makurazaki", "name": "枕崎水産 鹿児島天文館店", "hp_url": "", "hs_id": "0006145012", "use_reserve": 1, "enabled": 0, "note": "ホットペッパーURL未登録"},
+  {"key": "nansatsu", "name": "南薩農場 鹿児島天文館店", "hp_url": "", "hs_id": "0020003547", "use_reserve": 1, "enabled": 0, "note": "業者対応のため対象外"}
+]
