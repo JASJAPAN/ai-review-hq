@@ -134,7 +134,9 @@ def make_app():
         def rows(pub):
             return "".join(f'<tr class="list-item"><td><a href="/admin/plan/register/{i}">{p["name"]}</a></td></tr>'
                            for i, p in st["plans"].items() if p["pub"] == pub)
-        return f"""<a id="plan-register" href="/admin/plan/register/">プランを登録</a>
+        note = ('<div class="oc-alert is-success notification"><p class="oc-alert__message">プランを更新しました。</p></div>'
+                if request.args.get("updated") else "")
+        return note + f"""<a id="plan-register" href="/admin/plan/register/">プランを登録</a>
           <table id="list-plan-publish"><tbody id="sort-table">{rows(1)}</tbody></table>
           <h3>非掲載のプラン</h3><table>{rows(0)}</table>"""
 
@@ -194,6 +196,6 @@ def make_app():
         d, st["pending"] = st["pending"], None
         st["plans"][d["id"]].update(name=d["name"], price=d["price"], sale=d["sale"], pub=d["pub"])
         st["plan_updates"] += 1
-        return """<div class="notification notification--success"><p class="notification__message">プランの更新が完了しました。</p></div>"""
+        return redirect("/admin/plan/?updated=1")   # 本物と同じく、一覧へ戻って帯で知らせる
 
     return app
