@@ -22,7 +22,7 @@ import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 BASE = os.environ.get("KUCHIKOMI_BASE", "https://kuchikomi-hq.onrender.com").rstrip("/") + "/admin/media"
-TOKEN = os.environ.get("REPLY_RUN_TOKEN", "")
+TOKEN = os.environ.get("REPLY_RUN_TOKEN", "").strip()   # 貼り付け時に入った前後の空白・改行は無視する
 MODE = os.environ.get("HS_MODE", "dry")
 OWNER = os.environ.get("HS_OWNER_BASE", "https://owner.hitosara.com").rstrip("/")
 RESERVE = os.environ.get("HS_RESERVE_BASE", "https://reserve.hitosara.com").rstrip("/")
@@ -57,6 +57,9 @@ def accounts():
 def api(path, method="GET", body=None):
     r = requests.request(method, BASE + path, headers={"X-Run-Token": TOKEN, "Content-Type": "application/json"},
                          json=body, timeout=120)
+    if r.status_code == 403:
+        raise SystemExit(f"403: 合言葉（REPLY_RUN_TOKEN）が kuchikomi-hq 側と一致しません。"
+                         f"このCronに入っている値は {len(TOKEN)} 文字です。kuchikomi-hq の値と同じか確認してください。")
     r.raise_for_status()
     return r.json() if r.text.startswith(("{", "[")) else r.text
 
@@ -320,7 +323,9 @@ def process_store(browser, hs_id, pw, tasks, pages, log):
 
 def main():
     accts = accounts()
-    tasks = [] if MODE == "recon" else api("/tasks").get("tasks", [])
+    tasks = api("/tasks").get("tasks", [])   # 最初に合言葉を確かめる（違っていればブラウザを起動する前に止まる）
+    if MODE == "recon":
+        tasks = []
     by_store = {}
     for t in tasks:
         by_store.setdefault(t["hs_id"], []).append(t)
