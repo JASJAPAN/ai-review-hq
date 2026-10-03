@@ -26,7 +26,7 @@ def T(i, kind, ref="", text=""):
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as pw:
-        b = pw.chromium.launch(headless=True)
+        b = pw.chromium.launch(headless=True, args=W.LAUNCH_ARGS)   # 本番と同じ省メモリ設定で動かす
         yield b
         b.close()
 
