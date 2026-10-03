@@ -93,18 +93,22 @@ OUTLINE_JS = """(limit) => { const lines=[]; const walk=(el,d)=>{ if(d>16||lines
 
 CHECKS = {
     "owner_publish": ["a[rel='OwnerIntroduction']", "tr:has(a[rel='OwnerIntroduction']) td.status", "a[rel='OwnerSeat']", "a[rel='all']"],
-    "owner_intro_edit": ["form#introduction", "#intro40", "#intro300", "#edit", "#cancel"],
+    "owner_intro_list": ["a.edit", "div.introduce_field a.edit"],
+    "owner_intro_edit": ["form#introduction", "#intro40", "#intro300", "form#introduction input[name=tenpo_seq]",
+                         "form#introduction input[name=update_date]", "#edit", "#cancel"],
     "reserve_plan_list": ["#list-plan-publish", "#list-plan-publish tr.list-item",
                           "#list-plan-publish tr.list-item a[href*='/admin/plan/register/']"],
     "reserve_plan_edit": ["form.validate", "#place_name", "#plan_price", "#discounted_price", "#no-discount",
                           "#plan_available", "#plan_unavailable", "form.validate input[name=confirm]"],
-    "intro_edit": ["form#introduction", "#intro40", "#intro300", "#edit"],
+    "intro_edit": ["form#introduction", "#intro40", "#intro300", "form#introduction input[name=tenpo_seq]",
+                   "form#introduction input[name=update_date]", "#edit"],
     "plan_confirm": ["input[type=submit]", "button[type=submit]", "input[name=back]", ".notification", "div.formError"],
 }
 CHECK_JS = """(el) => { const t=(el.type||'').toLowerCase(); const secret=['password','hidden'].includes(t);
   return {tag: el.tagName.toLowerCase(), type: t, name: el.getAttribute('name')||'', cls: (typeof el.className==='string'?el.className:''),
           href: el.getAttribute('href')||'', checked: !!el.checked, disabled: !!el.disabled, readonly: !!el.readOnly,
-          text: (el.innerText||'').trim().slice(0,40), value: secret?'':String(el.value||'').slice(0,40),
+          text: secret ? (el.value ? '（値あり）' : '（値なし）') : (el.innerText||'').trim().slice(0,40),
+          value: secret?'':String(el.value||'').slice(0,40),
           value_len: secret?0:String(el.value||'').length}; }"""
 
 
@@ -210,6 +214,29 @@ class Session:
             raise Abort("公開画面で該当の行を特定できませんでした")
         return row
 
+    def open_intro_edit(self):
+        """お店の紹介文の編集画面を、一覧画面の「編集」リンクから開く。
+        URLを直接開くと、文言も内部の管理番号も空のフォームになる（2026/10/3 に本番で確認）。
+        空のフォームで保存すると既存の文言を消すおそれがあるので、必ずこの入口を使う。
+        戻り値: (今のキャッチコピー, 今の紹介文)"""
+        p = self.page
+        self.goto(OWNER + "/se/introduction/")
+        link = p.locator("div.introduce_field a.edit")
+        if link.count() != 1:
+            link = p.locator("a.edit")
+        if link.count() != 1:
+            self.snap("owner_intro_list")
+            raise Abort(f"お店の紹介文の一覧画面で「編集」リンクを1つに特定できませんでした（{link.count()}件）")
+        if not self.click_nav(link.first) or not p.locator("#intro40").count() or not p.locator("#intro300").count():
+            self.snap("intro_unexpected")
+            raise Abort("お店の紹介文の編集画面を開けませんでした")
+        hidden = [p.locator(f"form#introduction input[name={n}]") for n in ("tenpo_seq", "update_date")]
+        if any(h.count() != 1 or not h.first.evaluate("e => e.value") for h in hidden):
+            self.snap("owner_intro_edit")
+            raise Abort("編集画面に内部の管理番号（tenpo_seq・update_date）が入っていません。"
+                        "正しい入口から開けていないため、保存せずに中止しました")
+        return p.input_value("#intro40"), p.input_value("#intro300")
+
     def intro(self, catch=None, text=None, pub_catch="", pub_intro=""):
         """キャッチコピー・紹介文を入力 → 保存 → お店の紹介文だけ公開。
         pub_catch / pub_intro は公開ページに今出ている文言。編集画面が空のまま保存して既存の文言を消さないための照合に使う"""
@@ -217,16 +244,7 @@ class Session:
         self.goto(OWNER + "/se/publish.php")
         if self._pub_row(MANAGER_INTRO).locator("td.status.unreflect").count():
             raise Abort("お店の紹介文に未反映の編集が残っています。誰かの編集途中の可能性があるため、手を付けていません")
-        self.goto(OWNER + "/se/introduction/edit.php")
-        if not p.locator("#intro40").count() or not p.locator("#intro300").count():
-            self.snap("intro_unexpected")
-            raise Abort("お店の紹介文の編集画面が想定と違います")
-        cur40 = cur300 = ""
-        for _ in range(20):   # 既存の文言が後から入る作りに備えて、最大5秒待つ
-            cur40, cur300 = p.input_value("#intro40"), p.input_value("#intro300")
-            if (cur40 or not pub_catch) and (cur300 or not pub_intro):
-                break
-            p.wait_for_timeout(250)
+        cur40, cur300 = self.open_intro_edit()
         say(f"  現在の値: キャッチコピー {len(cur40)}文字 / 紹介文 {len(cur300)}文字")
         if (pub_catch and not cur40) or (pub_intro and not cur300):
             self.snap("owner_intro_edit")
@@ -338,11 +356,12 @@ class Session:
     # ---------------------------------------------------------- 記録だけ
     def recon(self):
         self.goto(OWNER + "/se/publish.php"); self.snap("owner_publish")
-        self.goto(OWNER + "/se/introduction/edit.php")
-        for _ in range(16):   # 既存の文言が後から入る場合に備えて、最大4秒待ってから記録する
-            if self.page.locator("#intro40").count() and self.page.input_value("#intro40"):
-                break
-            self.page.wait_for_timeout(250)
+        self.goto(OWNER + "/se/introduction/"); self.snap("owner_intro_list")
+        try:
+            cur40, cur300 = self.open_intro_edit()
+            self.log.append(f"{self.hs_id}：紹介文の編集画面 キャッチコピー {len(cur40)}文字 / 紹介文 {len(cur300)}文字")
+        except Abort as e:
+            self.log.append(f"{self.hs_id}：紹介文の編集画面 {e}")
         self.snap("owner_intro_edit")
         self.to_reserve(); self.snap("reserve_plan_list")
         first = self.page.locator("#list-plan-publish tr.list-item a[href*='/admin/plan/register/']").first
