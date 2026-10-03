@@ -254,6 +254,7 @@ def test_approve_then_worker_tasks_and_done(client):
     assert set(by) == {"intro_catch", "plan_name", "plan_off"}
     assert all(t["hs_id"] == "0020004633" for t in tasks)
     assert by["plan_name"]["ref"] == HS_COURSES[4][0] and by["plan_name"]["text"] == HP_COURSES[3][0]   # 直す先はヒトサラ側の今の名前で探す
+    assert by["intro_catch"]["hs_catch"] == hs_snap()["basics"]["catch"]         # 編集画面が空でないかの照合用に、公開中の文言も渡す
     assert by["plan_off"]["ref"].startswith("【全席完全個室】お席のみ予約")
 
     client.post("/admin/media/tasks/done", headers={"X-Run-Token": "tok"}, json={"id": catch, "ok": True, "message": "公開まで完了"})
@@ -289,11 +290,14 @@ def test_price_approval_uses_hotpepper_price(client, monkeypatch):
 def test_recon_upload_and_view(client):
     r = client.post("/admin/media/recon", headers={"X-Run-Token": "tok"},
                     json={"at": "2026-10-03T10:00:00", "mode": "dry", "log": ["うみどり：ログイン成功"],
-                          "pages": [{"name": "plan_confirm", "url": "https://reserve.hitosara.com/admin/plan/confirm/", "outline": "body", "png": ""}]})
+                          "pages": [{"name": "plan_confirm", "url": "https://reserve.hitosara.com/admin/plan/confirm/", "outline": "body", "png": "",
+                                     "checks": [{"selector": "#place_name", "count": 1, "first": {"tag": "input", "type": "text", "value": "お席のみの予約", "value_len": 7}},
+                                                {"selector": "#intro40", "count": 0, "first": {}}]}]})
     assert r.status_code == 200
     client.post("/admin/login", data={"password": os.environ["ADMIN_PASSWORD"]})
     page = client.get("/admin/media/recon").get_data(as_text=True)
     assert "plan_confirm" in page and "ログイン成功" in page
+    assert "お席のみの予約（7文字）" in page and '<tr class="ng"><td>#intro40</td><td>0</td>' in page   # 要素の確認結果が表で出る
 
 
 # ------------------------------------------------------------ AIの読み取り（2026/10/3 の JSONDecodeError 対策）
