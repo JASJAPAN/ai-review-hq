@@ -17,7 +17,7 @@ HS_MODE:
   ・削除は一切しない。確認ダイアログは決めた文言のものだけOKする
   ・確認画面に新しい値が出ていなければ登録しない。想定と違う画面になったら止めて画面を記録する
 """
-import base64, datetime, os, re, sys, traceback, unicodedata
+import base64, datetime, faulthandler, os, re, sys, traceback, unicodedata
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -37,8 +37,21 @@ LAUNCH_ARGS = ["--disable-dev-shm-usage", "--disable-gpu", "--no-zygote", "--dis
 BLOCK_TYPES = {"image", "media", "font"}   # 画像・動画・フォントは読み込まない（入力と保存には不要）
 
 
+STEP_LIMIT = int(os.environ.get("HS_STEP_LIMIT", "150"))   # 1つの操作がこの秒数を超えたら、止まった場所を書き出して強制終了
+WATCHDOG = False   # 本番実行（python hs_worker.py）のときだけ有効にする
+
+
+def watchdog():
+    """止まったまま動き続けるのを防ぐ（2026/10/3：ログイン画面を開いたところで無反応になった対策）。
+    呼ばれるたびに残り時間を巻き戻す。時間切れになると、止まっている場所をログに出して終了する"""
+    if WATCHDOG:
+        faulthandler.cancel_dump_traceback_later()
+        faulthandler.dump_traceback_later(STEP_LIMIT, exit=True)
+
+
 def say(*a):
     print(*a, flush=True)   # 途中で止まっても、どこまで進んだかがログに残るように
+    watchdog()
 
 
 class Abort(Exception):
@@ -103,6 +116,8 @@ class Session:
         self.ctx = browser.new_context(locale="ja-JP", viewport={"width": 1100, "height": 800}, service_workers="block")
         self.ctx.route("**/*", lambda route: route.abort() if route.request.resource_type in BLOCK_TYPES else route.continue_())
         self.page = self.ctx.new_page()
+        self.page.set_default_timeout(30000)
+        self.page.set_default_navigation_timeout(NAV)
         self.dialogs = []
         self.page.on("dialog", self._on_dialog)
         self.in_reserve = False
@@ -118,6 +133,7 @@ class Session:
         self.ctx.close()
 
     def snap(self, name):
+        watchdog()
         if len(self.pages) >= 14:   # 記録が大きくなりすぎないように
             return
         try:
@@ -137,21 +153,20 @@ class Session:
         say(f"  記録: {name} {self.page.url}")
 
     def settle(self):
-        """読み込み後の通信が落ち着くまで待つ（最大8秒）。既存の文言が後から入る画面への備え"""
-        try:
-            self.page.wait_for_load_state("networkidle", timeout=8000)
-        except PWTimeout:
-            pass
+        """画面の部品が出そろうのを少しだけ待つ（固定1.2秒）。
+        読み込み完了の合図を待つ方式は、本番で無反応になったため使わない。入力欄の中身は使う側で個別に確かめる"""
+        self.page.wait_for_timeout(1200)
 
     def goto(self, url):
         say(f"  開く: {url}")
-        self.page.goto(url, wait_until="load", timeout=NAV)
+        self.page.goto(url, wait_until="domcontentloaded", timeout=NAV)
         self.settle()
 
     def click_nav(self, locator):
         """1回だけ押して、次の画面を待つ（二重送信を防ぐ）。画面が変わらなければ False"""
+        watchdog()
         try:
-            with self.page.expect_navigation(wait_until="load", timeout=30000):
+            with self.page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
                 locator.click()
         except PWTimeout:
             return False
@@ -415,4 +430,7 @@ def main():
 
 
 if __name__ == "__main__":
+    WATCHDOG = True
+    watchdog()
     main()
+    faulthandler.cancel_dump_traceback_later()
