@@ -549,3 +549,21 @@ def test_media_token_is_accepted(client, monkeypatch):
     assert client.get("/admin/media/tasks", headers={"X-Run-Token": "tok"}).status_code == 200      # 既存の合言葉も引き続き有効
     assert client.get("/admin/media/tasks", headers={"X-Run-Token": "wrong-token"}).status_code == 403
     assert client.post("/admin/replies/run", headers={"X-Run-Token": "media-only"}).status_code in (302, 401, 403)   # 他の管制室では使えない
+
+
+def test_written_item_is_not_reopened_while_public_page_lags(client):
+    """自動反映の直後は公開ページが古いまま。そのあいだは同じズレを出し直さず、日数が過ぎても直っていなければ知らせる"""
+    con = _run_and_login(client)
+    name = con.execute("SELECT * FROM media_items WHERE kind='course_name' AND title LIKE '%4,000円・鍋無%'").fetchone()
+    client.post(f"/admin/media/item/{name['id']}/approve", data={"text": name["hp"]})
+    client.post("/admin/media/tasks/done", headers={"X-Run-Token": "tok"}, json={"id": name["id"], "ok": True, "message": "登録しました"})
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})              # 公開ページはまだ旧名のまま再チェック
+    con = M.db()
+    rows = con.execute("SELECT status FROM media_items WHERE sig=?", (name["sig"],)).fetchall()
+    assert [r["status"] for r in rows] == ["written"]                            # 新しい未対応項目は増えない
+    assert "公開ページへの反映を待っている項目が 1 件" in client.get("/admin/media/store/umidori").get_data(as_text=True)
+
+    con.execute("UPDATE media_items SET closed_at='2026-01-01T00:00:00+09:00' WHERE id=?", (name["id"],)); con.commit()
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})              # 日数が過ぎても公開ページが旧名のまま
+    again = M.db().execute("SELECT * FROM media_items WHERE sig=? AND status='open'", (name["sig"],)).fetchone()
+    assert again and "自動反映しましたが、公開ページにまだ出ていません" in again["note"]
