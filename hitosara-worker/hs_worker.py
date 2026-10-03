@@ -69,13 +69,30 @@ def norm(s):
     return re.sub(r"[\s\u3000]+", "", s).replace("〜", "~")
 
 
-OUTLINE_JS = """(limit) => { const lines=[]; const walk=(el,d)=>{ if(d>9||lines.length>limit) return;
-  const tag=el.tagName.toLowerCase(); if(['script','style','svg','noscript','link','meta'].includes(tag)) return;
+OUTLINE_JS = """(limit) => { const lines=[]; const walk=(el,d)=>{ if(d>16||lines.length>limit) return;
+  const tag=el.tagName.toLowerCase(); if(['script','style','svg','noscript','link','meta','br','option'].includes(tag)) return;
   const cls=(typeof el.className==='string'&&el.className.trim())?'.'+el.className.trim().split(/\\s+/).slice(0,3).join('.'):'';
   const id=el.id?'#'+el.id:''; const name=el.getAttribute('name')?`[name=${el.getAttribute('name')}]`:'';
   const own=[...el.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent.trim()).filter(Boolean).join(' ').slice(0,50);
   lines.push('  '.repeat(d)+tag+id+cls+name+(own?`  「${own}」`:'')); [...el.children].forEach(c=>walk(c,d+1)); };
   walk(document.body,0); return lines.join('\\n'); }"""
+
+
+CHECKS = {
+    "owner_publish": ["a[rel='OwnerIntroduction']", "tr:has(a[rel='OwnerIntroduction']) td.status", "a[rel='OwnerSeat']", "a[rel='all']"],
+    "owner_intro_edit": ["form#introduction", "#intro40", "#intro300", "#edit", "#cancel"],
+    "reserve_plan_list": ["#list-plan-publish", "#list-plan-publish tr.list-item",
+                          "#list-plan-publish tr.list-item a[href*='/admin/plan/register/']"],
+    "reserve_plan_edit": ["form.validate", "#place_name", "#plan_price", "#discounted_price", "#no-discount",
+                          "#plan_available", "#plan_unavailable", "form.validate input[name=confirm]"],
+    "intro_edit": ["form#introduction", "#intro40", "#intro300", "#edit"],
+    "plan_confirm": ["input[type=submit]", "button[type=submit]", "input[name=back]", ".notification", "div.formError"],
+}
+CHECK_JS = """(el) => { const t=(el.type||'').toLowerCase(); const secret=['password','hidden'].includes(t);
+  return {tag: el.tagName.toLowerCase(), type: t, name: el.getAttribute('name')||'', cls: (typeof el.className==='string'?el.className:''),
+          href: el.getAttribute('href')||'', checked: !!el.checked, disabled: !!el.disabled, readonly: !!el.readOnly,
+          text: (el.innerText||'').trim().slice(0,40), value: secret?'':String(el.value||'').slice(0,40),
+          value_len: secret?0:String(el.value||'').length}; }"""
 
 
 class Session:
@@ -105,24 +122,41 @@ class Session:
             return
         try:
             png = base64.b64encode(self.page.screenshot(type="jpeg", quality=45, full_page=False)).decode()
-            outline = self.page.evaluate(OUTLINE_JS, 250)
+            outline = self.page.evaluate(OUTLINE_JS, 400)
         except Exception as e:
             png, outline = "", f"(記録失敗: {e})"
-        self.pages.append({"name": f"{self.hs_id} {name}", "url": self.page.url, "outline": outline, "png": png})
+        checks = []
+        for sel in CHECKS.get(name, []):   # 頼りにしている要素が実際の画面にあるか
+            try:
+                loc = self.page.locator(sel)
+                n = loc.count()
+                checks.append({"selector": sel, "count": n, "first": loc.first.evaluate(CHECK_JS) if n else {}})
+            except Exception as e:
+                checks.append({"selector": sel, "count": -1, "first": {"text": f"確認失敗: {str(e)[:60]}"}})
+        self.pages.append({"name": f"{self.hs_id} {name}", "url": self.page.url, "outline": outline, "png": png, "checks": checks})
         say(f"  記録: {name} {self.page.url}")
+
+    def settle(self):
+        """読み込み後の通信が落ち着くまで待つ（最大8秒）。既存の文言が後から入る画面への備え"""
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=8000)
+        except PWTimeout:
+            pass
 
     def goto(self, url):
         say(f"  開く: {url}")
-        self.page.goto(url, wait_until="domcontentloaded", timeout=NAV)
+        self.page.goto(url, wait_until="load", timeout=NAV)
+        self.settle()
 
     def click_nav(self, locator):
         """1回だけ押して、次の画面を待つ（二重送信を防ぐ）。画面が変わらなければ False"""
         try:
-            with self.page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+            with self.page.expect_navigation(wait_until="load", timeout=30000):
                 locator.click()
-            return True
         except PWTimeout:
             return False
+        self.settle()
+        return True
 
     # ---------------------------------------------------------- ログイン
     def login(self):
@@ -161,8 +195,9 @@ class Session:
             raise Abort("公開画面で該当の行を特定できませんでした")
         return row
 
-    def intro(self, catch=None, text=None):
-        """キャッチコピー・紹介文を入力 → 保存 → お店の紹介文だけ公開"""
+    def intro(self, catch=None, text=None, pub_catch="", pub_intro=""):
+        """キャッチコピー・紹介文を入力 → 保存 → お店の紹介文だけ公開。
+        pub_catch / pub_intro は公開ページに今出ている文言。編集画面が空のまま保存して既存の文言を消さないための照合に使う"""
         p = self.page
         self.goto(OWNER + "/se/publish.php")
         if self._pub_row(MANAGER_INTRO).locator("td.status.unreflect").count():
@@ -171,13 +206,25 @@ class Session:
         if not p.locator("#intro40").count() or not p.locator("#intro300").count():
             self.snap("intro_unexpected")
             raise Abort("お店の紹介文の編集画面が想定と違います")
+        cur40 = cur300 = ""
+        for _ in range(20):   # 既存の文言が後から入る作りに備えて、最大5秒待つ
+            cur40, cur300 = p.input_value("#intro40"), p.input_value("#intro300")
+            if (cur40 or not pub_catch) and (cur300 or not pub_intro):
+                break
+            p.wait_for_timeout(250)
+        say(f"  現在の値: キャッチコピー {len(cur40)}文字 / 紹介文 {len(cur300)}文字")
+        if (pub_catch and not cur40) or (pub_intro and not cur300):
+            self.snap("owner_intro_edit")
+            raise Abort("編集画面に現在の文言が入っていません（公開ページには文言があります）。"
+                        "このまま保存すると既存の文言が消えるため中止しました")
         if catch is not None:
             p.fill("#intro40", catch)
         if text is not None:
             p.fill("#intro300", text)
         self.snap("intro_edit")
         if MODE != "run":
-            return "入力まで確認しました（保存・公開はしていません）"
+            was = f"変更前のキャッチコピー「{cur40[:30]}」（{len(cur40)}文字）、紹介文 {len(cur300)}文字"
+            return "入力まで確認しました（保存・公開はしていません）。" + was
         n = len(self.dialogs)
         if not self.click_nav(p.locator("#edit")):
             msg = " ".join(self.dialogs[n:]).replace("\n", " ") or "保存を押しても画面が切り替わりません"
@@ -275,9 +322,13 @@ class Session:
 
     # ---------------------------------------------------------- 記録だけ
     def recon(self):
-        for name, url in (("owner_publish", OWNER + "/se/publish.php"),
-                          ("owner_intro_edit", OWNER + "/se/introduction/edit.php")):
-            self.goto(url); self.snap(name)
+        self.goto(OWNER + "/se/publish.php"); self.snap("owner_publish")
+        self.goto(OWNER + "/se/introduction/edit.php")
+        for _ in range(16):   # 既存の文言が後から入る場合に備えて、最大4秒待ってから記録する
+            if self.page.locator("#intro40").count() and self.page.input_value("#intro40"):
+                break
+            self.page.wait_for_timeout(250)
+        self.snap("owner_intro_edit")
         self.to_reserve(); self.snap("reserve_plan_list")
         first = self.page.locator("#list-plan-publish tr.list-item a[href*='/admin/plan/register/']").first
         if first.count():
@@ -298,7 +349,8 @@ def process_store(browser, hs_id, pw, tasks, pages, log):
         if intro_tasks:   # キャッチコピーと紹介文は同じ画面なので1回の保存にまとめる
             try:
                 msg = s.intro(catch=next((t["text"] for t in intro_tasks if t["type"] == "intro_catch"), None),
-                              text=next((t["text"] for t in intro_tasks if t["type"] == "intro_text"), None))
+                              text=next((t["text"] for t in intro_tasks if t["type"] == "intro_text"), None),
+                              pub_catch=intro_tasks[0].get("hs_catch", ""), pub_intro=intro_tasks[0].get("hs_intro", ""))
                 results += [(t, True, msg) for t in intro_tasks]
             except Abort as e:
                 results += [(t, False, str(e)) for t in intro_tasks]

@@ -20,7 +20,8 @@ SEAT = "【全席完全個室】お席のみ予約◆個室をご用意！"
 
 
 def T(i, kind, ref="", text=""):
-    return {"id": i, "type": kind, "store_key": "umidori", "store": "うみどり", "hs_id": LOGIN_ID, "ref": ref, "current": ref, "text": text}
+    return {"id": i, "type": kind, "store_key": "umidori", "store": "うみどり", "hs_id": LOGIN_ID, "ref": ref, "current": ref,
+            "text": text, "hs_catch": "旧キャッチ", "hs_intro": "旧紹介文"}
 
 
 @pytest.fixture(scope="module")
@@ -111,3 +112,27 @@ def test_unexpected_confirm_dialog_is_dismissed(browser, site, monkeypatch):
         assert s.page.locator("#place_name").count() == 1 and any("削除" in d for d in s.dialogs)   # 画面はそのまま残っている
     finally:
         s.close()
+
+
+def test_waits_for_late_loaded_text_and_never_saves_over_empty_form(browser, site, monkeypatch):
+    """既存の文言が遅れて入る画面でも、入るまで待ってから入力する。入らないままなら保存しない"""
+    monkeypatch.setattr(W, "MODE", "run")
+    res, _, _ = run(browser, [T(1, "intro_catch", text="新キャッチ")])
+    assert res[1][0], res
+    assert site["intro"] == {"catch": "新キャッチ", "text": "旧紹介文"}          # 触っていない紹介文は消えていない
+
+    site["intro_never_loads"] = True                                            # 編集画面が空のまま（本物で写った状態）
+    res, pages, _ = run(browser, [T(2, "intro_catch", text="さらに新しいキャッチ")])
+    assert res[2][0] is False and "既存の文言が消えるため中止" in res[2][1]
+    assert site["intro"] == {"catch": "新キャッチ", "text": "旧紹介文"} and site["intro_draft"] is None
+
+
+def test_recon_reports_selector_checks(browser, site, monkeypatch):
+    monkeypatch.setattr(W, "MODE", "recon")
+    _, pages, log = run(browser, [])
+    by = {p["name"].split(" ", 1)[1]: {c["selector"]: c for c in p["checks"]} for p in pages}
+    assert by["owner_publish"]["a[rel='OwnerIntroduction']"]["count"] == 1
+    assert by["owner_intro_edit"]["#intro40"]["first"]["value"] == "旧キャッチ"      # 記録は文言が入ってから取る
+    assert by["reserve_plan_list"]["#list-plan-publish tr.list-item a[href*='/admin/plan/register/']"]["count"] == 3
+    assert by["reserve_plan_edit"]["form.validate input[name=confirm]"]["first"]["value"] == "この内容で確認する"
+    assert by["reserve_plan_edit"]["#plan_available"]["first"]["checked"] is True

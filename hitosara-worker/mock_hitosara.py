@@ -56,11 +56,13 @@ def make_app():
         return f"""<form id="introduction" action="/se/introduction/edit.php" method="post" enctype="multipart/form-data">
           <input type="hidden" name="confirm" value="1"><input type="hidden" name="kamei_cd" value="x">
           <input type="hidden" name="tenpo_seq" value="1"><input type="hidden" name="update_date" value="x">
-          <input type="text" name="intro40" id="intro40" maxlength="80" value="{cur['catch']}">
-          <textarea name="intro300" id="intro300" maxlength="600">{cur['text']}</textarea>
+          <input type="text" name="intro40" id="intro40" maxlength="80" value="">
+          <textarea name="intro300" id="intro300" maxlength="600"></textarea>
           <input type="submit" id="cancel" class="result_back" value="戻る">
           <input type="submit" id="edit" class="result_submit" value="保存"></form>
         <script>
+          if(!{str(st.get('intro_never_loads', False)).lower()}) setTimeout(function(){{   // 既存の文言は遅れて入る
+            document.getElementById('intro40').value={cur['catch']!r}; document.getElementById('intro300').value={cur['text']!r};}}, 600);
           document.getElementById('cancel').onclick=function(e){{e.preventDefault();location.href='/se/introduction/'}};
           document.getElementById('edit').onclick=function(e){{
             if(!document.getElementById('intro40').value){{e.preventDefault();
