@@ -64,7 +64,7 @@ def test_run_mode_writes_everything_and_publishes_only_intro(browser, site, monk
     assert site["plans"]["201"]["sale"] == 4500 and site["plans"]["201"]["pub"] == 0        # 同名の非掲載プランは別物
     assert site["plans"]["102"]["pub"] == 0 and site["plan_updates"] == 3
     assert site["stock_opened"] is False                              # 「在庫も開放する」は押していない
-    assert all("管理画面で反映を確認済み" in msg for i, (ok, msg) in res.items() if i != 1)
+    assert all("管理画面で反映を確認済み" in msg and "想定と違" not in msg for i, (ok, msg) in res.items() if i != 1)
 
 
 def test_dry_mode_changes_nothing_but_records_screens(browser, site, monkeypatch):
