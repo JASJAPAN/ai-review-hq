@@ -33,8 +33,11 @@ STALE_MIN = 60   # これ以上「実行中」のままなら落ちたとみな�
 
 def _now(): return datetime.now(JST).isoformat(timespec="seconds")
 def _tok():
-    want = os.environ.get("REPLY_RUN_TOKEN", "").strip()   # 前後の空白・改行の入り込みは無視する
-    return bool(want) and request.headers.get("X-Run-Token", "").strip() == want
+    """合言葉の確認。既存の REPLY_RUN_TOKEN か、媒体管制室専用の MEDIA_RUN_TOKEN のどちらかと一致すれば通す。
+    前後の空白・改行の入り込みは無視する"""
+    got = request.headers.get("X-Run-Token", "").strip()
+    wants = [os.environ.get(k, "").strip() for k in ("REPLY_RUN_TOKEN", "MEDIA_RUN_TOKEN")]
+    return bool(got) and got in [w for w in wants if w]
 
 
 TOKEN_PATHS = ("/admin/media/run", "/admin/media/tasks", "/admin/media/tasks/done", "/admin/media/recon", "/admin/media/notify")
@@ -121,9 +124,17 @@ def snapshot(side, store):
     basics = step("店舗トップ", AI.extract_basics, urls["top"])
     snap["basics"] = {k: ("" if v is None else str(v)) for k, v in (basics or {}).items()}
 
-    course_text = {}
+    course_text, per_course_coupons = {}, []
     def courses(side_, text):
         course_text["t"] = text
+        if side_ == "hp":   # ホットペッパーはページの形から直接読む。形が変わって件数が合わないときだけAIで読む
+            parsed = F.hp_courses_from_text(text)
+            if parsed and len(parsed) == len(F.course_links(text)):
+                for c in parsed:
+                    per_course_coupons.extend(c.pop("coupons", []))
+                snap["read_by"] = "ページの形から直接"
+                return parsed
+        snap["read_by"] = "AI"
         return AI.extract_courses(side_, text)
     snap["courses"] = _clean_courses(step("コース一覧", courses, urls["course"]))
     links = F.course_links(course_text.get("t", ""))
@@ -134,6 +145,10 @@ def snapshot(side, store):
     snap["course_text"] = D.norm(course_text.get("t", ""))   # 「ヒトサラにだけある」の裏取り用（保存前に取り除く）
 
     def coupons(text):
+        if side == "hp":
+            direct = F.hp_coupons_from_text(text)
+            if direct:
+                return direct
         return [c for c in AI.extract_coupons(side, text) if isinstance(c, dict) and c.get("title")]
     try:
         snap["coupons"] = coupons(F.page_text(urls["coupon"]))
@@ -141,10 +156,15 @@ def snapshot(side, store):
         snap["coupons"] = []
         snap["warnings"].append(f"クーポンページを読めませんでした（{type(e).__name__}）")
     if side == "hp" and not snap["coupons"] and "クーポン" in course_text.get("t", ""):
-        try:   # クーポンページから取れないときは、コース一覧ページに載っているクーポンで補う
-            snap["coupons"] = coupons(course_text["t"])
-        except Exception:
-            pass
+        # クーポンページから取れないときは、コース一覧ページの各コースに付いているクーポンで補う
+        seen = set()
+        snap["coupons"] = [{"title": t, "condition": ""} for t in per_course_coupons
+                           if D.norm(t) not in seen and not seen.add(D.norm(t))]
+        if not snap["coupons"]:
+            try:
+                snap["coupons"] = coupons(course_text["t"])
+            except Exception:
+                pass
         snap["warnings"].append("クーポン：専用ページから読み取れなかったため、コース一覧ページの記載で補いました"
                                 if snap["coupons"] else "クーポン：ページに記載がありそうですが0件でした（読み落としの可能性）")
     return snap

@@ -79,8 +79,9 @@ def _extract(prompt, schema, max_tokens):
             last = ExtractError("AIの出力が長すぎて途中で切れました")
             max_tokens *= 2
             continue
-        for b in msg.content:
-            if getattr(b, "type", "") == "tool_use" and isinstance(b.input, dict):
+        for b in msg.content:   # 中身が空（{}）で返ることがあるので、項目が1つも無いものは失敗として扱う
+            if getattr(b, "type", "") == "tool_use" and isinstance(b.input, dict) \
+                    and any(k in b.input for k in schema["properties"]):
                 return b.input
         last = ExtractError("AIがデータを返しませんでした")
     try:   # 予備の方式
@@ -96,6 +97,11 @@ def _list(data, key):
     if isinstance(data, list):
         return data
     v = data.get(key) if isinstance(data, dict) else None
+    if isinstance(v, str):   # 一覧が「文字列になったJSON」で返ることがある
+        try:
+            v = parse_json(v)
+        except ExtractError:
+            v = None
     return v if isinstance(v, list) else []
 
 

@@ -363,10 +363,17 @@ def test_failure_message_says_which_step(client, monkeypatch):
 
 # ------------------------------------------------------------ 読み落とし対策（2026/10/3：先頭コース1件・クーポン8件を読み落とした件）
 
-def _hp_course_page(n=16):
-    """ホットペッパーのコース一覧ページを文字化したものの代役（コース名＋詳細リンク）"""
-    return "\n".join(f"{name} ⟦/strJ003474523/course_cnod{i:02d}/⟧\n{price or ''} 円（税込）"
-                     for i, (name, price, _) in enumerate(HP_COURSES[:n], 1))
+def _hp_course_page(n=16, old_layout=False):
+    """ホットペッパーのコース一覧ページを文字化したものの代役（実際のページと同じ並び）。
+    old_layout=True は「ページの形が変わって直接読めない」場合の代役（コース名とリンクが別の行）"""
+    out = []
+    for i, (name, price, count) in enumerate(HP_COURSES[:n], 1):
+        link = f"⟦/strJ003474523/course_cnod{i:02d}/⟧"
+        out += [name, link] if old_layout else [f"{name} {link}", link]
+        out += [f"コース品数：{count}品／利用人数：2名～" if count else "利用人数：2名～"]
+        out += [f"{price:,}", "円（税込）"] if price else []
+        out += [f"詳細・予約 {link}"]
+    return "\n".join(out)
 
 
 def test_to_text_does_not_lose_body_after_unclosed_tag():
@@ -394,8 +401,8 @@ def test_extract_courses_rereads_items_missing_against_links(monkeypatch):
     assert len(AI.extract_courses("hp", _hp_course_page())) == 16 and len(fake.calls) == 1   # 揃っていれば読み直さない
 
 
-def _pipeline(client, monkeypatch, hp_courses):
-    pages = {"https://www.hotpepper.jp/strJ003474523/course/": _hp_course_page() + "\nクーポン 【幹事無料】日～木限定！"}
+def _pipeline(client, monkeypatch, hp_courses, old_layout=False):
+    pages = {"https://www.hotpepper.jp/strJ003474523/course/": _hp_course_page(old_layout=old_layout) + "\nクーポン 【幹事無料】日～木限定！"}
     monkeypatch.setattr(F, "page_text", lambda url, limit=None: pages.get(url, url))
     monkeypatch.setattr(AI, "extract_courses", lambda side, text: hp_courses if side == "hp" else hs_snap()["courses"])
     calls = []
@@ -408,7 +415,7 @@ def _pipeline(client, monkeypatch, hp_courses):
 
 
 def test_missed_course_is_not_offered_for_unpublishing(client, monkeypatch):
-    con, _ = _pipeline(client, monkeypatch, hp_snap()["courses"][1:])           # ホットペッパー側で先頭1件を読み落とした状態
+    con, _ = _pipeline(client, monkeypatch, hp_snap()["courses"][1:], old_layout=True)   # 直接読めずAIで読み、先頭1件を落とした状態
     kinds = [r["kind"] for r in con.execute("SELECT kind FROM media_items")]
     assert "course_extra" not in kinds and kinds.count("course_extra_unsure") == 2
     unsure = con.execute("SELECT * FROM media_items WHERE kind='course_extra_unsure' AND title LIKE '%1杯100円%'").fetchone()
@@ -420,7 +427,7 @@ def test_missed_course_is_not_offered_for_unpublishing(client, monkeypatch):
 
 
 def test_real_extra_stays_approvable_and_coupons_fall_back_to_course_page(client, monkeypatch):
-    con, calls = _pipeline(client, monkeypatch, hp_snap()["courses"])           # 16件すべて読めた状態
+    con, calls = _pipeline(client, monkeypatch, [])                             # AIが何も返さなくても、ページから直接16件読める
     extra = con.execute("SELECT * FROM media_items WHERE kind='course_extra'").fetchall()
     assert len(extra) == 1 and extra[0]["ref"].startswith("【全席完全個室】お席のみ予約")   # 本当にヒトサラだけにあるものは残る
     assert con.execute("SELECT COUNT(*) FROM media_items WHERE kind='course_extra_unsure'").fetchone()[0] == 0
@@ -439,3 +446,102 @@ def test_token_ignores_stray_whitespace_and_debug_view(client, monkeypatch):
     client.post("/admin/login", data={"password": os.environ["ADMIN_PASSWORD"]})
     d = client.get("/admin/media/store/umidori/debug?side=hp&page=coupon&q=幹事無料").get_json()
     assert d["url"].endswith("/map/") and d["in_html"]["count"] == 1 and d["in_text"]["count"] == 1
+
+
+# ------------------------------------------------------------ ホットペッパーはページの形から直接読む
+# 下の2つは、2026/10/3 15:24 に本番で取得した実際のページの文字（調査用画面の出力）をそのまま使っている
+
+REAL_HP_COURSE_TEXT = """クーポン・地図
+全席完全個室居酒屋 鮮魚と地鶏と炭火 うみどり 天文館店 コース
+2026/09/28 更新
+ネット予約できるコース
+【日～木＆期間限定】定番サワーやハイボール、翠ジンソーダなど1杯100円(税込110円)何杯でも◎ ⟦/strJ003474523/course_cnod05/⟧
+⟦/strJ003474523/course_cnod05/⟧
+【期間限定】日～木曜日のご来店限定！ハイボールやレモンサワー、大人気の翠ジンからカクテルまで、豊富な…
+利用人数：2名～
+予約締切：来店日の当日22時まで
+※曜日によって締切が異なる場合があります。
+110
+円（税込）
+クーポン【期間限定】対象ドリンクが何杯飲んでも1杯100円！（税込110円）※日～木限定
+クーポン【誕生日・サプライズ・記念日・お祝い】 デザート付◆メッセージプレートプレゼント！
+詳細・予約 ⟦/strJ003474523/course_cnod05/⟧
+【1番人気】地鶏たたき・刺身・黒豚と黒毛和牛メンチなど鍋無10品/3H飲み放題＆個室確約 ⟦/strJ003474523/course_cnod01/⟧
+⟦/strJ003474523/course_cnod01/⟧
+枕崎かつお炙り付の旬魚2種の刺身と地鶏の炭火たたきをはじめ、黒豚と黒毛和牛メンチの食べくらべ夏おくら…
+コース品数：10品／利用人数：2名～
+予約締切：来店日の当日22時まで
+※曜日によって締切が異なる場合があります。
+4,500
+円（税込）
+クーポン【幹事無料】日～木限定！6名様以上のコース利用で1名様分無料！
+詳細・予約 ⟦/strJ003474523/course_cnod01/⟧"""
+
+REAL_HP_COUPON_TEXT = """2026/10/01 更新
+クーポン
+【忘年会早割！最大1,000円オフ】1か月前のご予約で500円オフ＆日～木曜日のご予約で500円オフ
+【提示条件】
+予約時
+【利用条件】
+日～木限定（祝前日不可）/5,000円以上のコース限定・8名様以上/要予約（1か月前）/他券・他サービスとの併用不可
+【有効期限】
+2026年11月30日
+このクーポンが使えるコース
+【期間限定】対象ドリンクが何杯飲んでも1杯100円！（税込110円）※日～木限定
+【提示条件】
+予約時完全予約制（来店時利用不可）
+【利用条件】
+日～木曜日限定（祝前日不可）/混雑時は90分L.O./お料理1人2オーダー制
+【有効期限】
+なし
+このクーポンが使えるコース
+【幹事無料】日～木限定！6名様以上のコース利用で1名様分無料！
+【提示条件】
+予約時
+【利用条件】
+予約時に提示/他券・サービス併用不可/要予約/日～木限定（祝前日不可）
+【有効期限】
+なし
+このクーポンが使えるコース
+【日～木曜限定】4名様以上のコース予約で飲み放題を"プラチナ飲み放題"に 無料でグレードアップ
+【提示条件】
+予約時
+【利用条件】
+予約時に提示
+【有効期限】
+なし"""
+
+
+def test_hp_courses_read_directly_from_real_page_text():
+    rows = F.hp_courses_from_text(REAL_HP_COURSE_TEXT)
+    assert [(r["price"], r["items_count"], r["link"]) for r in rows] == [
+        (110, None, "/strJ003474523/course_cnod05/"), (4500, 10, "/strJ003474523/course_cnod01/")]
+    assert rows[0]["name"] == HP_COURSES[0][0] and rows[1]["name"] == HP_COURSES[1][0]   # 今日AIが落とした先頭コースも読める
+    assert rows[0]["coupons"][0].startswith("【期間限定】対象ドリンク") and len(rows[0]["coupons"]) == 2
+    assert len(rows) == len(F.course_links(REAL_HP_COURSE_TEXT))
+    assert len(F.hp_courses_from_text(_hp_course_page())) == 16 and F.hp_courses_from_text(_hp_course_page())[15]["price"] is None
+    assert F.hp_courses_from_text(_hp_course_page(old_layout=True)) == []                 # 形が違えば使わない（AIに回す）
+
+
+def test_hp_coupons_read_directly_from_real_page_text():
+    rows = F.hp_coupons_from_text(REAL_HP_COUPON_TEXT)
+    assert [r["title"][:8] for r in rows] == ["【忘年会早割！最", "【期間限定】対象", "【幹事無料】日～", "【日～木曜限定】"]
+    assert '"プラチナ飲み放題"' in rows[3]["title"]                               # 半角の引用符が入った見出しもそのまま読める
+    assert "【利用条件】 予約時に提示/他券・サービス併用不可" in rows[2]["condition"] and "このクーポン" not in rows[2]["condition"]
+    assert F.hp_coupons_from_text("クーポンはありません") == []
+
+
+def test_ai_empty_or_stringified_results_are_handled(monkeypatch):
+    ok = _Msg([_Block("tool_use", input={"coupons": '[{"title": "幹事無料", "condition": ""}]'})])   # 一覧が文字列で返る
+    fake = _FakeClient([_Msg([_Block("tool_use", input={})]), ok])                                     # 1回目は中身が空
+    monkeypatch.setattr(AI, "_client", lambda: fake)
+    assert AI.extract_coupons("hs", "本文") == [{"title": "幹事無料", "condition": ""}]
+    assert len(fake.calls) == 2
+
+
+def test_media_token_is_accepted(client, monkeypatch):
+    monkeypatch.setenv("MEDIA_RUN_TOKEN", "media-only")
+    assert client.get("/admin/media/tasks", headers={"X-Run-Token": "media-only"}).status_code == 200
+    assert client.get("/admin/media/tasks", headers={"X-Run-Token": "tok"}).status_code == 200      # 既存の合言葉も引き続き有効
+    assert client.get("/admin/media/tasks", headers={"X-Run-Token": "wrong-token"}).status_code == 403
+    assert client.post("/admin/replies/run", headers={"X-Run-Token": "media-only"}).status_code in (302, 401, 403)   # 他の管制室では使えない

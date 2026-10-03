@@ -162,3 +162,48 @@ def absolute(side, link):
         return link
     host = "https://www.hotpepper.jp" if side == "hp" else "https://hitosara.com"
     return host + (link if link.startswith("/") else "/" + link)
+
+
+# ---------------------------------------------------------------- ホットペッパーはページの形から直接読む（AIを使わない）
+# 2026/10/3 に実際のページで確認した並び:
+#   コース名 ⟦詳細リンク⟧ → 説明 → 「コース品数：10品／利用人数：…」 → 「4,500」「円（税込）」 → 「クーポン【…】」… → 「詳細・予約 ⟦同じリンク⟧」
+#   クーポンページは  見出し → 【提示条件】… → 【利用条件】… → 【有効期限】… → 「このクーポンが使えるコース」
+
+def hp_courses_from_text(text):
+    lines, starts, seen = (text or "").split("\n"), [], set()
+    for i, line in enumerate(lines):
+        m = re.match(r"^(.*?)\s*⟦([^⟧]+)⟧\s*$", line)
+        if not m:
+            continue
+        title, path = m.group(1).strip(), link_path(m.group(2))
+        if title and title != "詳細・予約" and "/course_cnod" in path and path not in seen:
+            seen.add(path)
+            starts.append((i, path, title))
+    out = []
+    for n, (i, path, title) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
+        block = re.split(r"(?m)^詳細・予約", "\n".join(lines[i + 1:end]))[0]
+        price = (re.search(r"(?m)^([\d,]+)\s*\n\s*円[（(]税込[）)]", block)
+                 or re.search(r"(?m)^([\d,]+)\s*円[（(]税込[）)]\s*$", block))
+        count = re.search(r"コース品数[：:]\s*(\d+)\s*品", block)
+        out.append({"name": title, "link": path,
+                    "price": int(price.group(1).replace(",", "")) if price else None,
+                    "items_count": int(count.group(1)) if count else None,
+                    "coupons": [l.strip()[4:].strip() for l in block.split("\n") if l.strip().startswith("クーポン【")]})
+    return out
+
+
+def hp_coupons_from_text(text):
+    lines, out, seen = [l.strip() for l in (text or "").split("\n")], [], set()
+    for i, line in enumerate(lines):
+        if line != "【提示条件】" or i == 0:
+            continue
+        title, cond, j = lines[i - 1], [], i
+        while j < len(lines) and lines[j] != "このクーポンが使えるコース" \
+                and not (j > i and j + 1 < len(lines) and lines[j + 1] == "【提示条件】"):
+            cond.append(lines[j]); j += 1
+        key = re.sub(r"\s+", "", title)
+        if title and key not in seen:
+            seen.add(key)
+            out.append({"title": title, "condition": " ".join(cond)})
+    return out
