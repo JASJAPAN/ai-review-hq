@@ -622,8 +622,14 @@ def tasks():
     rows = con.execute("""SELECT i.id, i.kind, i.ref, i.hs, i.write_text, s.key store_key, s.name store, s.hs_id
                           FROM media_items i JOIN media_stores s ON s.key=i.store_key
                           WHERE i.status='approved' ORDER BY s.sort, i.id""").fetchall()
+    pub = {}   # 公開ページに今出ているキャッチコピー・紹介文（編集画面が空のまま保存しないための照合用）
+    for r in con.execute("SELECT store_key, data FROM media_snaps WHERE side='hs'"):
+        try: pub[r["store_key"]] = json.loads(r["data"]).get("basics", {})
+        except Exception: pass
     return jsonify(tasks=[{"id": r["id"], "type": WRITABLE[r["kind"]], "store_key": r["store_key"], "store": r["store"],
-                           "hs_id": r["hs_id"], "ref": r["ref"], "current": r["hs"], "text": r["write_text"]} for r in rows])
+                           "hs_id": r["hs_id"], "ref": r["ref"], "current": r["hs"], "text": r["write_text"],
+                           "hs_catch": pub.get(r["store_key"], {}).get("catch", ""),
+                           "hs_intro": pub.get(r["store_key"], {}).get("intro", "")} for r in rows])
 
 
 @media_bp.route("/tasks/done", methods=["POST"])
@@ -661,10 +667,16 @@ def recon():
     except Exception:
         return "まだ記録がありません。Cron「cron-hitosara-worker」を実行すると、ここに画面の記録が出ます。"
     return render_template_string("""<style>body{font-family:sans-serif;max-width:1100px;margin:auto;padding:12px}
-pre{background:#f5f5f5;padding:8px;font-size:11px;max-height:400px;overflow:auto;white-space:pre-wrap}img{max-width:100%;border:1px solid #ccc}</style>
+pre{background:#f5f5f5;padding:8px;font-size:11px;max-height:400px;overflow:auto;white-space:pre-wrap}img{max-width:100%;border:1px solid #ccc}
+table{border-collapse:collapse;font-size:12px;margin:8px 0}td,th{border:1px solid #ccc;padding:3px 6px;text-align:left}.ng{background:#FBE3DE}</style>
 <h2>ヒトサラ ワーカーの画面記録 {{d.get('at','')[:16]}}（モード: {{d.get('mode','')}}）</h2>
 {% if d.get('error') %}<p style="color:#B3402F">エラー: {{d.error}}</p>{% endif %}
 {% for line in d.get('log', []) %}<div>{{line}}</div>{% endfor %}
 {% for pg in d.get('pages', []) %}<h3>{{pg.name}} — {{pg.url}}</h3>
+{% if pg.get('checks') %}<table><tr><th>要素</th><th>件数</th><th>種類</th><th>文字・値</th><th>状態</th></tr>
+{% for c in pg.checks %}{% set f = c.first %}<tr class="{{'ng' if c.count < 1}}"><td>{{c.selector}}</td><td>{{c.count}}</td>
+<td>{{f.get('tag','')}}{% if f.get('type') %}（{{f.type}}）{% endif %}</td>
+<td>{{f.get('text') or f.get('value') or f.get('href','')}}{% if f.get('value_len') %}（{{f.value_len}}文字）{% endif %}</td>
+<td>{{f.get('cls','')}}{{' ✓選択中' if f.get('checked')}}{{' 入力不可' if f.get('disabled') or f.get('readonly')}}</td></tr>{% endfor %}</table>{% endif %}
 {% if pg.png %}<img src="data:image/jpeg;base64,{{pg.png}}">{% endif %}<pre>{{pg.outline}}</pre>{% endfor %}
 <p><a href="{{url_for('media.index')}}">媒体管制室へ</a></p>""", d=d)
