@@ -29,6 +29,16 @@ RESERVE = os.environ.get("HS_RESERVE_BASE", "https://reserve.hitosara.com").rstr
 MANAGER_INTRO = "OwnerIntroduction"
 ALLOW_CONFIRM = ("反映してもよろしいですか", "この内容で登録します")   # これ以外の確認ダイアログはキャンセルする
 NAV = 60000
+# メモリ512MBの枠で動かすための設定（2026/10/3 に Out of memory で落ちた対策）
+LAUNCH_ARGS = ["--disable-dev-shm-usage", "--disable-gpu", "--no-zygote", "--disable-extensions",
+               "--disable-background-networking", "--disable-sync", "--mute-audio", "--renderer-process-limit=1",
+               "--disable-features=IsolateOrigins,site-per-process,Translate,BackForwardCache",
+               "--enable-features=NetworkServiceInProcess", "--js-flags=--max-old-space-size=160"]
+BLOCK_TYPES = {"image", "media", "font"}   # 画像・動画・フォントは読み込まない（入力と保存には不要）
+
+
+def say(*a):
+    print(*a, flush=True)   # 途中で止まっても、どこまで進んだかがログに残るように
 
 
 class Abort(Exception):
@@ -70,7 +80,8 @@ class Session:
 
     def __init__(self, browser, hs_id, pw, pages, log):
         self.hs_id, self.pw, self.pages, self.log = hs_id, pw, pages, log
-        self.ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900})
+        self.ctx = browser.new_context(locale="ja-JP", viewport={"width": 1100, "height": 800}, service_workers="block")
+        self.ctx.route("**/*", lambda route: route.abort() if route.request.resource_type in BLOCK_TYPES else route.continue_())
         self.page = self.ctx.new_page()
         self.dialogs = []
         self.page.on("dialog", self._on_dialog)
@@ -95,8 +106,10 @@ class Session:
         except Exception as e:
             png, outline = "", f"(記録失敗: {e})"
         self.pages.append({"name": f"{self.hs_id} {name}", "url": self.page.url, "outline": outline, "png": png})
+        say(f"  記録: {name} {self.page.url}")
 
     def goto(self, url):
+        say(f"  開く: {url}")
         self.page.goto(url, wait_until="domcontentloaded", timeout=NAV)
 
     def click_nav(self, locator):
@@ -273,7 +286,9 @@ def process_store(browser, hs_id, pw, tasks, pages, log):
     """1店舗の作業を実行し、[(task, ok, message)] を返す"""
     results, s = [], Session(browser, hs_id, pw, pages, log)
     try:
+        say(f"{hs_id}: ログイン開始")
         s.login()
+        say(f"{hs_id}: ログイン成功")
         if MODE == "recon":
             s.recon(); log.append(f"{hs_id}：ログイン成功・画面を記録"); return results
         intro_tasks = [t for t in tasks if t["type"] in ("intro_catch", "intro_text")]
@@ -310,12 +325,13 @@ def main():
     for t in tasks:
         by_store.setdefault(t["hs_id"], []).append(t)
     targets = list(accts) if MODE == "recon" else list(by_store)
-    print(f"mode={MODE} 対象店舗={targets} 作業={len(tasks)}件")
+    say(f"mode={MODE} 対象店舗={targets} 作業={len(tasks)}件")
     if not targets:
         return
     pages, log, results = [], [], []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, args=LAUNCH_ARGS)
+        say("ブラウザ起動")
         for hs_id in targets:
             if hs_id not in accts:
                 results += [(t, False, f"ログイン情報が未設定です（HS_n_ID / HS_n_PW に {hs_id} を登録してください）")
@@ -323,7 +339,10 @@ def main():
                 continue
             results += process_store(browser, hs_id, accts[hs_id], by_store.get(hs_id, []), pages, log)
         browser.close()
+    for line in log:
+        say(line)
     for t, ok, msg in results:
+        say(f"{t['store']} {t['type']} {'OK' if ok else '中止'} {msg}")
         log.append(f"{t['store']}｜{t['type']}｜{'OK' if ok else '中止'}｜{msg}")
         if MODE == "run":
             api("/tasks/done", "POST", {"id": t["id"], "ok": ok, "message": msg})
