@@ -294,3 +294,68 @@ def test_recon_upload_and_view(client):
     client.post("/admin/login", data={"password": os.environ["ADMIN_PASSWORD"]})
     page = client.get("/admin/media/recon").get_data(as_text=True)
     assert "plan_confirm" in page and "ログイン成功" in page
+
+
+# ------------------------------------------------------------ AIの読み取り（2026/10/3 の JSONDecodeError 対策）
+
+class _Block:
+    def __init__(self, type, **kw):
+        self.type = type
+        self.__dict__.update(kw)
+
+
+class _Msg:
+    def __init__(self, content, stop_reason="end_turn"):
+        self.content, self.stop_reason = content, stop_reason
+
+
+class _FakeClient:
+    """Anthropic APIの代役。呼ばれた内容を記録し、用意した返答を順に返す"""
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        r = self.replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_parse_json_survives_raw_newlines_and_surrounding_text():
+    broken = 'はい、抜き出しました。\n{"name": "うみどり", "intro": "一行目\n二行目"}\n以上です。'   # 文字列の中に生の改行、前後に説明文
+    with pytest.raises(Exception):
+        __import__("json").loads(broken[broken.find("{"):])        # 以前の読み方ではここで JSONDecodeError
+    assert AI.parse_json(broken) == {"name": "うみどり", "intro": "一行目\n二行目"}
+    assert AI.parse_json('```json\n[{"title": "幹事無料"}]\n```') == [{"title": "幹事無料"}]
+    with pytest.raises(AI.ExtractError):
+        AI.parse_json("データはありません")
+
+
+def test_extract_uses_structured_output(monkeypatch):
+    fake = _FakeClient([_Msg([_Block("tool_use", input={"courses": [{"name": "A", "price": 4500, "items_count": 10, "link": ""}]})])])
+    monkeypatch.setattr(AI, "_client", lambda: fake)
+    assert AI.extract_courses("hp", "ページ本文")[0]["price"] == 4500
+    assert fake.calls[0]["tool_choice"] == {"type": "tool", "name": "save"}
+
+
+def test_extract_retries_when_cut_off_then_falls_back_to_text(monkeypatch):
+    ok = _Msg([_Block("tool_use", input={"name": "うみどり", "intro": "a\nb"})])
+    fake = _FakeClient([_Msg([], stop_reason="max_tokens"), ok])
+    monkeypatch.setattr(AI, "_client", lambda: fake)
+    assert AI.extract_basics("hs", "本文")["intro"] == "a\nb"
+    assert fake.calls[1]["max_tokens"] == fake.calls[0]["max_tokens"] * 2      # 途中で切れたら上限を倍にしてやり直す
+
+    fake = _FakeClient([RuntimeError("tool use unavailable"), _Msg([_Block("text", text='{"coupons": [{"title": "幹事無料", "condition": ""}]}')])])
+    monkeypatch.setattr(AI, "_client", lambda: fake)
+    assert AI.extract_coupons("hp", "本文") == [{"title": "幹事無料", "condition": ""}]   # 使えないときは文章から取り出す
+
+
+def test_failure_message_says_which_step(client, monkeypatch):
+    def boom(side, text):
+        raise AI.ExtractError("AIの返答を読み取れません（Invalid control character）")
+    monkeypatch.setattr(AI, "extract_courses", boom)
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
+    err = M.db().execute("SELECT last_error FROM media_stores WHERE key='umidori'").fetchone()["last_error"]
+    assert "ホットペッパーグルメのコース一覧の読み取りに失敗" in err
