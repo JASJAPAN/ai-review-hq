@@ -88,7 +88,8 @@ OUTLINE_JS = """(limit) => { const lines=[]; const walk=(el,d)=>{ if(d>16||lines
   const id=el.id?'#'+el.id:''; const name=el.getAttribute('name')?`[name=${el.getAttribute('name')}]`:'';
   const own=[...el.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent.trim()).filter(Boolean).join(' ').slice(0,50);
   lines.push('  '.repeat(d)+tag+id+cls+name+(own?`  「${own}」`:'')); [...el.children].forEach(c=>walk(c,d+1)); };
-  walk(document.body,0); return lines.join('\\n'); }"""
+  walk(document.querySelector('form#submit_form, form.validate, form#introduction, #list-plan-publish, .func_wrapper')||document.body,0);
+  return lines.join('\\n'); }"""
 
 
 CHECKS = {
@@ -102,7 +103,10 @@ CHECKS = {
                           "#plan_available", "#plan_unavailable", "form.validate input[name=confirm]"],
     "intro_edit": ["form#introduction", "#intro40", "#intro300", "form#introduction input[name=tenpo_seq]",
                    "form#introduction input[name=update_date]", "#edit"],
-    "plan_confirm": ["input[type=submit]", "button[type=submit]", "input[name=back]", ".notification", "div.formError"],
+    "plan_confirm": ["form#submit_form", "form#submit_form input[name=back]", "form#submit_form input[name=create_plan]",
+                     "form#submit_form input[name=register_only]", "form#submit_form input[name=stock_open][type=submit]",
+                     "#daily_setting_attention_modal"],
+    "plan_result": [".notification", "div.formError", "form#submit_form"],
 }
 CHECK_JS = """(el) => { const t=(el.type||'').toLowerCase(); const secret=['password','hidden'].includes(t);
   return {tag: el.tagName.toLowerCase(), type: t, name: el.getAttribute('name')||'', cls: (typeof el.className==='string'?el.className:''),
@@ -112,10 +116,9 @@ CHECK_JS = """(el) => { const t=(el.type||'').toLowerCase(); const secret=['pass
           value_len: secret?0:String(el.value||'').length}; }"""
 
 
-BTN_JS = """() => [...document.querySelectorAll('input[type=submit], button[type=submit]')].map(e => ({
-  name: e.getAttribute('name')||'', label: String(e.value||e.innerText||'').trim().slice(0,30),
-  in_form: !!(e.form && e.form.querySelector('input[name=back]')),
-  action: e.form ? (e.form.getAttribute('action')||'') : '', shown: !!(e.offsetWidth||e.offsetHeight) }))"""
+BTN_JS = """() => [...document.querySelectorAll('input[type=submit], input[type=button], button')].map(e => ({
+  name: e.getAttribute('name')||'', type: (e.type||'').toLowerCase(), label: String(e.value||e.innerText||'').trim().slice(0,30),
+  in_form: !!(e.form && e.form.querySelector('input[name=back]')), shown: !!(e.offsetWidth||e.offsetHeight) }))"""
 
 
 class Session:
@@ -309,20 +312,54 @@ class Session:
         return hits[0]
 
     def _register_button(self):
-        """確認画面の登録ボタンを1つに特定する。「内容を修正する」（name=back）と同じフォームの中にあり、
-        表示されていて、文字に「登録」か「更新」を含むものだけを対象にする。特定できなければ押さない"""
+        """確認画面の登録ボタンを確かめる（2026/10/3 に本番の画面で確認した作り）。
+        見えているのは「この内容で登録する」（input[type=button] name=create_plan）。押すと、
+          ・data-is-show-update-stock-modal が空 → そのまま「プランの登録のみ」が実行される
+          ・値あり → 「登録したプランの在庫を開放しますか？」の枠が出て、「プランの登録のみ」「在庫も開放する」を選ぶ
+        このプログラムは「プランの登録のみ」だけを使う。「在庫も開放する」は席の在庫を変えるので決して押さない。
+        戻り値: (入口のボタン, 「プランの登録のみ」のボタン, 枠が出るか)。作りが違えば None"""
         p = self.page
-        buttons = p.evaluate(BTN_JS)
-        picks = [i for i, b in enumerate(buttons) if b["in_form"] and b["shown"] and b["name"] != "back"
-                 and ("登録" in b["label"] or "更新" in b["label"])]
-        if len({(buttons[i]["name"], buttons[i]["label"]) for i in picks}) != 1:
-            picks = []   # 種類の違う候補が複数ある、または候補が無い
-        desc = " ／ ".join(f"{'★' if picks and i == picks[0] else ''}「{b['label']}」name={b['name'] or '(なし)'}"
-                           f"{'' if b['in_form'] else '（別のフォーム）'}{'' if b['shown'] else '（非表示）'}"
-                           for i, b in enumerate(buttons))
-        line = f"{self.hs_id}：確認画面のボタン {desc}（★が登録で押す対象）"
+        buttons = [b for b in p.evaluate(BTN_JS) if b["in_form"]]
+        trigger = p.locator("form#submit_form input[name=create_plan]")
+        only = p.locator("form#submit_form input[type=submit][name=register_only]")
+        ok = trigger.count() == 1 and only.count() == 1 and trigger.first.is_visible()
+        modal = bool((trigger.first.get_attribute("data-is-show-update-stock-modal") or "").strip()) if ok else False
+        desc = " ／ ".join(f"「{b['label']}」name={b['name'] or '(なし)'}{'' if b['shown'] else '（非表示）'}" for b in buttons)
+        how = ("特定できず" if not ok else
+               "「この内容で登録する」→ 在庫の確認枠が出る →「プランの登録のみ」を押す" if modal else
+               "「この内容で登録する」を押すと、そのまま「プランの登録のみ」で登録される")
+        line = f"{self.hs_id}：確認画面のボタン {desc} ｜ 登録の手順：{how}"
         say("  " + line); self.log.append(line)
-        return p.locator("input[type=submit], button[type=submit]").nth(picks[0]) if picks else None
+        return (trigger.first, only.first, modal) if ok else None
+
+    def _register(self, btn):
+        """登録を実行する。押すのは「この内容で登録する」と、枠が出た場合の「プランの登録のみ」だけ"""
+        trigger, only, modal = btn
+        if not modal:
+            if self.click_nav(trigger):
+                return True
+            if not only.is_visible():       # 画面が変わらず、枠も出ていない
+                return False
+        else:
+            watchdog()
+            trigger.click()
+        try:
+            only.wait_for(state="visible", timeout=6000)
+        except PWTimeout:
+            return False
+        return self.click_nav(only)
+
+    def _verify_plan(self, kind, plan_id, new):
+        """登録後、管理画面を読み直して本当に変わったかを確かめる（完了画面の文言に頼らない）"""
+        p = self.page
+        self.goto(RESERVE + "/admin/plan/")
+        link = p.locator(f"#list-plan-publish tr.list-item a[href*='/admin/plan/register/{plan_id}']")
+        if kind == "plan_off":
+            return link.count() == 0
+        if kind == "plan_name":
+            return link.count() > 0 and norm(link.first.inner_text()) == norm(new)
+        self.goto(f"{RESERVE}/admin/plan/register/{plan_id}")
+        return int(re.sub(r"\D", "", p.input_value("#discounted_price")) or 0) == int(new)
 
     def plan(self, task):
         """掲載中プランの名称・販売価格・掲載状態のどれか1つを変える → 確認画面 → 登録"""
@@ -361,6 +398,7 @@ class Session:
             errs = " ".join(p.locator("div.formError:visible").all_inner_texts())[:200]
             self.snap("plan_input_error")
             raise Abort("確認画面に進めませんでした：" + (errs or "入力エラー"))
+        p.evaluate("window.scrollTo(0, document.body.scrollHeight)")   # ボタンが写るように下まで送る
         self.snap("plan_confirm")
         body = p.locator("body").inner_text()
         shown = norm(body) if kind == "plan_name" else body
@@ -371,12 +409,14 @@ class Session:
             return "確認画面まで進めました（登録はしていません）" + ("" if btn else "。登録ボタンは特定できていません")
         if btn is None:
             raise Abort("確認画面の登録ボタンを特定できなかったため、登録していません（ログのボタン一覧を確認してください）")
-        self.click_nav(btn)
+        moved = self._register(btn)
         self.snap("plan_result")
-        if not p.locator(".notification").filter(has_text=re.compile("完了")).count():
-            self.snap("plan_result_unexpected")
-            raise Abort("登録ボタンは押しましたが、完了画面を確認できませんでした。ヒトサラ側で結果を確認してください")
-        return "登録しました"
+        done = p.locator(".notification").filter(has_text=re.compile("完了")).count() > 0
+        if self._verify_plan(kind, plan_id, new):
+            return "登録しました（管理画面で反映を確認済み）" + ("" if done else "。完了画面の表示は想定と違いました")
+        if not moved:
+            raise Abort("「この内容で登録する」を押しても画面が進みませんでした。登録されていません")
+        raise Abort("登録の操作はしましたが、管理画面で反映を確認できませんでした。ヒトサラ側で結果を確認してください")
 
     # ---------------------------------------------------------- 記録だけ
     def recon(self):
