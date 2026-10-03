@@ -8,7 +8,7 @@ import requests
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 WAIT = float(os.environ.get("MEDIA_FETCH_WAIT", "1.5"))   # 相手サーバーに負荷をかけない間隔（秒）
-MAX_CHARS = int(os.environ.get("MEDIA_PAGE_MAX_CHARS", "24000"))
+MAX_CHARS = int(os.environ.get("MEDIA_PAGE_MAX_CHARS", "60000"))
 
 HP_URL_RE = re.compile(r"^https://www\.hotpepper\.jp/strJ\d{9}/$")
 HS_ID_RE = re.compile(r"^\d{10}$")
@@ -51,22 +51,24 @@ def get(url):
     return r.text
 
 
-_SKIP = {"script", "style", "noscript", "svg", "iframe", "template", "select", "footer"}
+_SKIP = {"script", "style", "noscript", "svg", "template", "select", "footer"}
+LINK_MARK = re.compile(r"⟦([^⟧]+)⟧")
+LINK_PATH = re.compile(r"(/strJ\d{9}/course_cnod\d+/|/\d{10}/course\d+\.html)")
 _BLOCK = {"p", "div", "li", "ul", "ol", "tr", "table", "section", "article", "header", "main", "dl", "dt", "dd",
           "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr", "td", "th", "form", "nav", "aside"}
 _VOID = {"br", "hr", "img", "input", "meta", "link", "source", "wbr", "area", "base", "col", "embed", "param", "track"}
 
 
 class _Lin(HTMLParser):
-    def __init__(self):
+    def __init__(self, skip=_SKIP):
         super().__init__(convert_charrefs=True)
-        self.out, self.skip, self.href = [], 0, []
+        self.out, self.stack, self.href, self.skip_tags = [], [], [], skip
 
     def handle_starttag(self, tag, attrs):
-        if tag in _SKIP:
-            self.skip += 1
+        if tag in self.skip_tags:
+            self.stack.append(tag)
             return
-        if self.skip:
+        if self.stack:
             return
         if tag in _BLOCK:
             self.out.append("\n")
@@ -75,14 +77,16 @@ class _Lin(HTMLParser):
             self.href.append(href if KEEP_LINK.search(href.split("?")[0]) else "")
 
     def handle_startendtag(self, tag, attrs):
-        if tag in _BLOCK and not self.skip:
+        if tag in _BLOCK and not self.stack:
             self.out.append("\n")
 
     def handle_endtag(self, tag):
-        if tag in _SKIP:
-            self.skip = max(0, self.skip - 1)
+        if tag in self.skip_tags:
+            if tag in self.stack:   # 内側に閉じ忘れのタグがあっても、ここでまとめて閉じる（以降の本文を落とさない）
+                while self.stack and self.stack.pop() != tag:
+                    pass
             return
-        if self.skip or tag in _VOID:
+        if self.stack or tag in _VOID:
             return
         if tag == "a" and self.href:
             href = self.href.pop()
@@ -92,13 +96,12 @@ class _Lin(HTMLParser):
             self.out.append("\n")
 
     def handle_data(self, data):
-        if not self.skip:
+        if not self.stack:
             self.out.append(data)
 
 
-def to_text(html, limit=None):
-    """HTMLを「読める文字だけ」に直す。コース詳細へのリンクは ⟦URL⟧ の形で残す"""
-    p = _Lin()
+def _linearize(html, skip):
+    p = _Lin(skip)
     p.feed(html)
     lines, prev = [], None
     for raw in "".join(p.out).splitlines():
@@ -106,7 +109,47 @@ def to_text(html, limit=None):
         if line and line != prev:          # 空行と直前の重複行（スマホ用・PC用の二重表示）を落とす
             lines.append(line)
             prev = line
-    return "\n".join(lines)[: (limit or MAX_CHARS)]
+    return "\n".join(lines)
+
+
+def to_text(html, limit=None):
+    """HTMLを「読める文字だけ」に直す。コース詳細へのリンクは ⟦URL⟧ の形で残す"""
+    text = _linearize(html, _SKIP)
+    if len(text) < 1500 and len(html) > 20000:   # 極端に短いときは、飛ばす範囲を最小限にして読み直す
+        text = _linearize(html, {"script", "style"})
+    return text[: (limit or MAX_CHARS)]
+
+
+def link_path(link):
+    """リンク表記のゆれ（絶対URL・括弧つき・?以降）を取り除いて、パスだけにする"""
+    m = LINK_PATH.search(link or "")
+    return m.group(1) if m else ""
+
+
+def course_links(text):
+    """本文に出てくるコース詳細リンクを、出てくる順に重複なく返す"""
+    out = []
+    for m in LINK_MARK.finditer(text or ""):
+        path = link_path(m.group(1))
+        if path and path not in out:
+            out.append(path)
+    return out
+
+
+def debug_page(url, q=""):
+    """読み取りの不具合調査用：元のHTMLと、AIに渡す文字のそれぞれで、語句 q の前後を返す"""
+    html = get(url)
+    text = to_text(html)
+    out = {"url": url, "html_chars": len(html), "text_chars": len(text), "course_links": course_links(text),
+           "text_head": text[:1500]}
+    if q:
+        def around(src, width):
+            hits = [m.start() for m in re.finditer(re.escape(q), src)]
+            return {"count": len(hits), "contexts": [src[max(0, i - width): i + width] for i in hits[:3]]}
+        out["q"] = q
+        out["in_html"] = around(html, 700)
+        out["in_text"] = around(text, 400)
+    return out
 
 
 def page_text(url, limit=None):
