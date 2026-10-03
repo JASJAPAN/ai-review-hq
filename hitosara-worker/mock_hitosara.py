@@ -12,7 +12,7 @@ def make_app():
     st = app.state = {
         "intro": {"catch": "旧キャッチ", "text": "旧紹介文"}, "intro_draft": None,
         "seat_unreflect": True,              # 調査前から残っている「座席情報」の未反映
-        "reflect_calls": [], "plan_updates": 0,
+        "reflect_calls": [], "plan_updates": 0, "bad_save": False,
         "plans": {
             "101": {"name": "【1番人気】鍋無10品/3H飲み放題＆個室確約", "price": 5980, "sale": 4000, "same": False, "pub": 1},
             "102": {"name": "【全席完全個室】お席のみ予約◆個室をご用意！", "price": 1, "sale": 1, "same": True, "pub": 1},
@@ -41,28 +41,38 @@ def make_app():
 
     @app.route("/se/introduction/")
     def intro_list():
-        return owner_guard() or "<h1>お店の紹介文</h1><a class='edit' href='#'>編集</a>"
+        # 本物と同じ作り：「編集」は href="#" で、スクリプトが form#_send（POST、kamei_cd と edit=true）を作って送信する
+        cur = st["intro_draft"] or st["intro"]
+        return owner_guard() or f"""<h1>お店の紹介文</h1><div class="introduce_field">
+          <p class="copy">{cur['catch']}</p><p class="about">{cur['text']}</p><a class="edit" href="#">編集</a></div>
+        <script>document.querySelector('a.edit').onclick=function(e){{e.preventDefault();
+          var f=document.createElement('form'); f.id='_send'; f.method='POST'; f.action='/se/introduction/edit.php';
+          [['kamei_cd','x'],['edit','true']].forEach(function(kv){{var i=document.createElement('input');i.type='hidden';i.name=kv[0];i.value=kv[1];f.appendChild(i)}});
+          document.body.appendChild(f); f.submit();}};</script>"""
 
     @app.route("/se/introduction/edit.php", methods=["GET", "POST"])
     def intro_edit():
         g = owner_guard()
         if g: return g
-        if request.method == "POST":
+        if request.method == "POST" and "intro40" in request.form:      # 保存
+            if not request.form.get("tenpo_seq") or not request.form.get("update_date"):
+                st["bad_save"] = True                                    # 空のフォームからの保存（本番では文言が消えるおそれ）
             new = {"catch": request.form["intro40"], "text": request.form["intro300"]}
             if new != st["intro"]:
                 st["intro_draft"] = new
             return redirect("/se/introduction/")
-        cur = st["intro_draft"] or st["intro"]
+        # 一覧の「編集」から来たとき（edit=true）だけ文言と管理番号が入る。URLを直接開くと空（本番で確認した動き）
+        via_link = request.method == "POST" and request.form.get("edit") == "true" and not st.get("edit_link_broken")
+        cur = (st["intro_draft"] or st["intro"]) if via_link else {"catch": "", "text": ""}
+        hid = "x" if via_link else ""
         return f"""<form id="introduction" action="/se/introduction/edit.php" method="post" enctype="multipart/form-data">
           <input type="hidden" name="confirm" value="1"><input type="hidden" name="kamei_cd" value="x">
-          <input type="hidden" name="tenpo_seq" value="1"><input type="hidden" name="update_date" value="x">
-          <input type="text" name="intro40" id="intro40" maxlength="80" value="">
-          <textarea name="intro300" id="intro300" maxlength="600"></textarea>
+          <input type="hidden" name="tenpo_seq" value="{hid}"><input type="hidden" name="update_date" value="{hid}">
+          <input type="text" name="intro40" id="intro40" maxlength="80" value="{cur['catch']}">
+          <textarea name="intro300" id="intro300" maxlength="600">{cur['text']}</textarea>
           <input type="submit" id="cancel" class="result_back" value="戻る">
           <input type="submit" id="edit" class="result_submit" value="保存"></form>
         <script>
-          if(!{str(st.get('intro_never_loads', False)).lower()}) setTimeout(function(){{   // 既存の文言は遅れて入る
-            document.getElementById('intro40').value={cur['catch']!r}; document.getElementById('intro300').value={cur['text']!r};}}, 600);
           document.getElementById('cancel').onclick=function(e){{e.preventDefault();location.href='/se/introduction/'}};
           document.getElementById('edit').onclick=function(e){{
             if(!document.getElementById('intro40').value){{e.preventDefault();
