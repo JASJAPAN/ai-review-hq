@@ -12,7 +12,7 @@ def make_app():
     st = app.state = {
         "intro": {"catch": "旧キャッチ", "text": "旧紹介文"}, "intro_draft": None,
         "seat_unreflect": True,              # 調査前から残っている「座席情報」の未反映
-        "reflect_calls": [], "plan_updates": 0, "bad_save": False,
+        "reflect_calls": [], "plan_updates": 0, "bad_save": False, "stock_opened": False,
         "plans": {
             "101": {"name": "【1番人気】鍋無10品/3H飲み放題＆個室確約", "price": 5980, "sale": 4000, "same": False, "pub": 1},
             "102": {"name": "【全席完全個室】お席のみ予約◆個室をご用意！", "price": 1, "sale": 1, "same": True, "pub": 1},
@@ -162,17 +162,35 @@ def make_app():
         st["pending"] = {"id": f["plan[plan_id]"], "name": f["plan[plan_name]"], "price": int(f["plan[plan_price]"]),
                          "sale": int(f["plan[discounted_price]"]), "pub": int(f["plan[plan_publish_flag]"])}
         d = st["pending"]
-        return f"""<form action="/admin/search/" method="get"><input type="submit" name="search" value="検索"></form>
-          <h1>プランの更新（内容確認）</h1><p>以下の内容でプランを更新します。よろしいですか？</p>
+        attr = "1" if st.get("stock_modal") else ""
+        return f"""<h1>プランの更新（内容確認）</h1><p>以下の内容でプランを更新します。よろしいですか？</p>
           <p>掲載状態：{'掲載' if d['pub'] else '非掲載'}</p><p class="confirm-plan-name">{d['name']}</p>
           <p>定価 {d['price']:,}円 ／ 販売価格 {d['sale']:,}円</p>
-          <form action="/admin/plan/update/" method="post"><input type="hidden" name="csrf_token" value="t">
-          <input type="submit" name="back" value="内容を修正する"><input type="submit" name="update_plan" value="この内容で登録する"></form>"""
+          <form id="submit_form" action="/admin/plan/update/" method="post">
+            <input type="hidden" name="update_flag" value="1"><input type="hidden" name="csrf_token" value="t">
+            <input type="hidden" name="auto_update_stock_flag" value="">
+            <input type="submit" name="back" value="内容を修正する" class="op-input-form__action-target oc-btn oc-btn--l">
+            <input type="button" name="create_plan" value="この内容で登録する" data-is-show-update-stock-modal="{attr}"
+                   class="op-input-form__action-target oc-btn oc-btn--l oc-btn--success js-stock-modal">
+            <div id="daily_setting_attention_modal" class="confirm_modal" style="display:none"><div class="bg"></div><div class="content">
+              <div class="close-btn"></div><p>登録したプランの在庫を開放しますか？</p>
+              <input type="submit" name="register_only" value="プランの登録のみ" class="oc-btn submit_btn">
+              <input type="submit" name="stock_open" value="在庫も開放する" class="oc-btn stock_button submit_btn">
+              <input class="stock_open" type="hidden" name="stock_open" value=""></div></div>
+          </form>
+          <script>document.querySelector('.js-stock-modal').onclick=function(){{
+            if(this.getAttribute('data-is-show-update-stock-modal')){{document.getElementById('daily_setting_attention_modal').style.display='block';return false}}
+            document.querySelector(".submit_btn[name='register_only']").click();}};
+            document.querySelector('.stock_button').addEventListener('click',function(){{document.querySelector('input.stock_open').value='在庫も開放する'}});</script>"""
 
     @app.route("/admin/plan/update/", methods=["POST"])
     def plan_update():
         if "back" in request.form or not st["pending"]:
             return redirect("/admin/plan/")
+        if any(request.form.getlist("stock_open")):
+            st["stock_opened"] = True            # 「在庫も開放する」が押された（ワーカーは決して押さないこと）
+        if "register_only" not in request.form and not any(request.form.getlist("stock_open")):
+            return "登録ボタン以外から送信されました", 400
         d, st["pending"] = st["pending"], None
         st["plans"][d["id"]].update(name=d["name"], price=d["price"], sale=d["sale"], pub=d["pub"])
         st["plan_updates"] += 1
