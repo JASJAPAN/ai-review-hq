@@ -112,6 +112,12 @@ CHECK_JS = """(el) => { const t=(el.type||'').toLowerCase(); const secret=['pass
           value_len: secret?0:String(el.value||'').length}; }"""
 
 
+BTN_JS = """() => [...document.querySelectorAll('input[type=submit], button[type=submit]')].map(e => ({
+  name: e.getAttribute('name')||'', label: String(e.value||e.innerText||'').trim().slice(0,30),
+  in_form: !!(e.form && e.form.querySelector('input[name=back]')),
+  action: e.form ? (e.form.getAttribute('action')||'') : '', shown: !!(e.offsetWidth||e.offsetHeight) }))"""
+
+
 class Session:
     """1店舗ぶんのブラウザ操作"""
 
@@ -254,6 +260,8 @@ class Session:
             p.fill("#intro40", catch)
         if text is not None:
             p.fill("#intro300", text)
+        for sel in ("#intro40", "#intro300"):   # 画面の文字数表示は keyup / blur で更新される作り
+            p.dispatch_event(sel, "keyup"); p.dispatch_event(sel, "blur")
         self.snap("intro_edit")
         if MODE != "run":
             was = f"変更前のキャッチコピー「{cur40[:30]}」（{len(cur40)}文字）、紹介文 {len(cur300)}文字"
@@ -300,6 +308,22 @@ class Session:
             raise Abort(f"掲載中のプラン一覧で「{ref[:30]}…」が{len(hits)}件でした（1件に特定できないため中止）")
         return hits[0]
 
+    def _register_button(self):
+        """確認画面の登録ボタンを1つに特定する。「内容を修正する」（name=back）と同じフォームの中にあり、
+        表示されていて、文字に「登録」か「更新」を含むものだけを対象にする。特定できなければ押さない"""
+        p = self.page
+        buttons = p.evaluate(BTN_JS)
+        picks = [i for i, b in enumerate(buttons) if b["in_form"] and b["shown"] and b["name"] != "back"
+                 and ("登録" in b["label"] or "更新" in b["label"])]
+        if len({(buttons[i]["name"], buttons[i]["label"]) for i in picks}) != 1:
+            picks = []   # 種類の違う候補が複数ある、または候補が無い
+        desc = " ／ ".join(f"{'★' if picks and i == picks[0] else ''}「{b['label']}」name={b['name'] or '(なし)'}"
+                           f"{'' if b['in_form'] else '（別のフォーム）'}{'' if b['shown'] else '（非表示）'}"
+                           for i, b in enumerate(buttons))
+        line = f"{self.hs_id}：確認画面のボタン {desc}（★が登録で押す対象）"
+        say("  " + line); self.log.append(line)
+        return p.locator("input[type=submit], button[type=submit]").nth(picks[0]) if picks else None
+
     def plan(self, task):
         """掲載中プランの名称・販売価格・掲載状態のどれか1つを変える → 確認画面 → 登録"""
         p, kind, new = self.page, task["type"], task.get("text") or ""
@@ -342,12 +366,13 @@ class Session:
         shown = norm(body) if kind == "plan_name" else body
         if expect not in shown and not (kind == "plan_price" and str(int(new)) in body):
             raise Abort("確認画面に新しい値が表示されていないため、登録していません")
+        btn = self._register_button()
         if MODE != "run":
-            return "確認画面まで進めました（登録はしていません）"
-        btn = p.locator("input[type=submit]:not([name=back]), button[type=submit]:not([name=back])")
-        if btn.count() != 1:
-            raise Abort("確認画面の登録ボタンを特定できませんでした（画面記録を確認してください）")
-        self.click_nav(btn.first)
+            return "確認画面まで進めました（登録はしていません）" + ("" if btn else "。登録ボタンは特定できていません")
+        if btn is None:
+            raise Abort("確認画面の登録ボタンを特定できなかったため、登録していません（ログのボタン一覧を確認してください）")
+        self.click_nav(btn)
+        self.snap("plan_result")
         if not p.locator(".notification").filter(has_text=re.compile("完了")).count():
             self.snap("plan_result_unexpected")
             raise Abort("登録ボタンは押しましたが、完了画面を確認できませんでした。ヒトサラ側で結果を確認してください")
