@@ -104,9 +104,21 @@ def _clean_courses(rows):
 def snapshot(side, store):
     """1店舗・片側の公開ページを読んで、比較できる形（基本情報・コース・クーポン）にする"""
     urls = F.hp_urls(store["hp_url"]) if side == "hp" else F.hs_urls(store["hs_id"])
-    snap = {"urls": urls, "warnings": []}
-    snap["basics"] = AI.extract_basics(side, F.page_text(urls["top"]))
-    snap["courses"] = _clean_courses(AI.extract_courses(side, F.page_text(urls["course"])))
+    snap, site = {"urls": urls, "warnings": []}, AI.SIDE[side]
+
+    def step(label, fn, url):   # どの段階で止まったかを、エラー文に残す
+        try:
+            text = F.page_text(url)
+        except Exception as e:
+            raise RuntimeError(f"{site}の{label}ページを取得できませんでした（{type(e).__name__}: {str(e)[:120]}）")
+        try:
+            return fn(side, text)
+        except Exception as e:
+            raise RuntimeError(f"{site}の{label}の読み取りに失敗しました（{type(e).__name__}: {str(e)[:160]}）")
+
+    basics = step("店舗トップ", AI.extract_basics, urls["top"])
+    snap["basics"] = {k: ("" if v is None else str(v)) for k, v in (basics or {}).items()}
+    snap["courses"] = _clean_courses(step("コース一覧", AI.extract_courses, urls["course"]))
     try:
         snap["coupons"] = [c for c in AI.extract_coupons(side, F.page_text(urls["coupon"]))
                            if isinstance(c, dict) and c.get("title")]
