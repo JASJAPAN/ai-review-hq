@@ -7,6 +7,7 @@
 文章の中にJSONを書かせる方式だと、紹介文の改行などでJSONが壊れることがあるため（2026/10/3 の JSONDecodeError 対策）。
 """
 import json, os
+import media_fetch as F
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 SIDE = {"hp": "ホットペッパーグルメ", "hs": "ヒトサラ"}
@@ -115,21 +116,48 @@ access: アクセスの表記
     return d if isinstance(d, dict) else {}
 
 
-def extract_courses(side, text):
-    return _list(_extract(f"""次は{SIDE[side]}のコース一覧ページの文字です。掲載されているコース（席のみ予約を含む）を上から順に全部抜き出してください。{RULE}
-クーポンはコースではないので含めないでください。
-
-name: コース名（タイトル全文）
+COURSE_FIELDS = """name: コース名（タイトル全文）
 price: 税込の販売価格（割引後の価格）を整数で。価格が無ければ null
 items_count: 「コース品数：◯品」のように名前とは別に書かれた品数を整数で。無ければ null
-link: 「⟦…⟧」はそのコースの詳細ページへのリンク。対応するものの中身を入れる。無ければ空文字
+link: 「⟦…⟧」はそのコースの詳細ページへのリンク。対応するものの中身を入れる。無ければ空文字"""
+
+
+def extract_courses(side, text):
+    """コース一覧を抜き出す。本文中の詳細リンクの数と突き合わせ、抜けがあればそのリンクを指定して読み直す
+    （2026/10/3：先頭の「1杯100円」プランを読み落とした対策）"""
+    rows = _list(_extract(f"""次は{SIDE[side]}のコース一覧ページの文字です。掲載されているコースを上から順に全部抜き出してください。{RULE}
+詳細ページへのリンク「⟦…⟧」が付いている項目は、すべてコースです。価格が安いもの・ドリンクの企画・飲み放題だけのプラン・
+二次会プラン・席のみ予約も、必ず含めてください。件数はリンクの種類の数と同じになるはずです。
+リンクの付いていない「クーポン」の見出しだけは含めないでください。
+
+{COURSE_FIELDS}
 
 --- ページ ---
 {text}""", COURSES, 8000), "courses")
+    want = F.course_links(text)
+    have = {F.link_path(str(r.get("link") or "")) for r in rows if isinstance(r, dict)}
+    missing = [l for l in want if l not in have]
+    if missing and len(rows) < len(want):
+        more = _list(_extract(f"""次は{SIDE[side]}のコース一覧ページの文字です。次のリンクが付いている項目だけを抜き出してください。{RULE}
+どれもコースとして掲載されているものです（ドリンクの企画や席のみ予約でも対象です）。
+
+対象のリンク:
+{chr(10).join(missing)}
+
+{COURSE_FIELDS}
+
+--- ページ ---
+{text}""", COURSES, 4000), "courses")
+        rows += [r for r in more if isinstance(r, dict) and F.link_path(str(r.get("link") or "")) in missing]
+        order = {l: i for i, l in enumerate(want)}
+        rows.sort(key=lambda r: order.get(F.link_path(str(r.get("link") or "")), len(order)) if isinstance(r, dict) else len(order))
+    return rows
 
 
 def extract_coupons(side, text):
-    return _list(_extract(f"""次は{SIDE[side]}のクーポン掲載ページの文字です。掲載されているクーポンを重複なく全部抜き出してください。{RULE}
+    return _list(_extract(f"""次は{SIDE[side]}のページの文字です。このページに載っているクーポンを全部抜き出してください。{RULE}
+クーポンは「【…】」で始まる見出しと、提示条件・利用条件・有効期限の説明が組になって並んでいます。
+同じ見出しが何度も出てくる場合は1つにまとめてください。コースそのものはクーポンではありません。
 
 title: クーポンの内容（タイトル全文）
 condition: 利用条件・提示条件・有効期限の表記

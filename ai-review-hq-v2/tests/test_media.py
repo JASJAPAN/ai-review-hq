@@ -359,3 +359,83 @@ def test_failure_message_says_which_step(client, monkeypatch):
     client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
     err = M.db().execute("SELECT last_error FROM media_stores WHERE key='umidori'").fetchone()["last_error"]
     assert "ホットペッパーグルメのコース一覧の読み取りに失敗" in err
+
+
+# ------------------------------------------------------------ 読み落とし対策（2026/10/3：先頭コース1件・クーポン8件を読み落とした件）
+
+def _hp_course_page(n=16):
+    """ホットペッパーのコース一覧ページを文字化したものの代役（コース名＋詳細リンク）"""
+    return "\n".join(f"{name} ⟦/strJ003474523/course_cnod{i:02d}/⟧\n{price or ''} 円（税込）"
+                     for i, (name, price, _) in enumerate(HP_COURSES[:n], 1))
+
+
+def test_to_text_does_not_lose_body_after_unclosed_tag():
+    html = ('<body><noscript><iframe src="x"></noscript>'                      # 閉じ忘れの iframe（以前はここから後ろが全部消えた）
+            '<a href="/strJ003474523/course_cnod01/">【日～木＆期間限定】1杯100円</a><select><option>x</select>'
+            '<svg><path/></svg><p>クーポン 【幹事無料】</p></body>')
+    t = F.to_text(html)
+    assert "1杯100円 ⟦/strJ003474523/course_cnod01/⟧" in t and "【幹事無料】" in t
+    assert F.course_links(t) == ["/strJ003474523/course_cnod01/"]
+    assert F.link_path("⟦https://www.hotpepper.jp/strJ003474523/course_cnod01/?x=1⟧") == "/strJ003474523/course_cnod01/"
+
+
+def test_extract_courses_rereads_items_missing_against_links(monkeypatch):
+    all16 = hp_snap()["courses"]
+    first = _Msg([_Block("tool_use", input={"courses": all16[1:]})])            # 先頭の「1杯100円」を落とした返答
+    second = _Msg([_Block("tool_use", input={"courses": [all16[0]]})])
+    fake = _FakeClient([first, second])
+    monkeypatch.setattr(AI, "_client", lambda: fake)
+    rows = AI.extract_courses("hp", _hp_course_page())
+    assert len(rows) == 16 and rows[0]["name"].startswith("【日～木＆期間限定】")   # 読み直して、ページの順に戻す
+    assert "/strJ003474523/course_cnod01/" in fake.calls[1]["messages"][0]["content"]   # 抜けたリンクを名指しで読み直している
+
+    fake = _FakeClient([_Msg([_Block("tool_use", input={"courses": all16})])])
+    monkeypatch.setattr(AI, "_client", lambda: fake)
+    assert len(AI.extract_courses("hp", _hp_course_page())) == 16 and len(fake.calls) == 1   # 揃っていれば読み直さない
+
+
+def _pipeline(client, monkeypatch, hp_courses):
+    pages = {"https://www.hotpepper.jp/strJ003474523/course/": _hp_course_page() + "\nクーポン 【幹事無料】日～木限定！"}
+    monkeypatch.setattr(F, "page_text", lambda url, limit=None: pages.get(url, url))
+    monkeypatch.setattr(AI, "extract_courses", lambda side, text: hp_courses if side == "hp" else hs_snap()["courses"])
+    calls = []
+    def coupons(side, text):
+        calls.append((side, "course_cnod" in text))
+        return [{"title": "【幹事無料】日～木限定！6名様以上のコース利用で1名様分無料！", "condition": ""}] if "course_cnod" in text else []
+    monkeypatch.setattr(AI, "extract_coupons", coupons)
+    con = _run_and_login(client)
+    return con, calls
+
+
+def test_missed_course_is_not_offered_for_unpublishing(client, monkeypatch):
+    con, _ = _pipeline(client, monkeypatch, hp_snap()["courses"][1:])           # ホットペッパー側で先頭1件を読み落とした状態
+    kinds = [r["kind"] for r in con.execute("SELECT kind FROM media_items")]
+    assert "course_extra" not in kinds and kinds.count("course_extra_unsure") == 2
+    unsure = con.execute("SELECT * FROM media_items WHERE kind='course_extra_unsure' AND title LIKE '%1杯100円%'").fetchone()
+    assert unsure["level"] == "info" and unsure["title"].startswith("要確認（読み落としの可能性）")
+    assert client.post(f"/admin/media/item/{unsure['id']}/approve").status_code == 404      # 自動で非掲載にはできない
+    page = client.get("/admin/media/store/umidori").get_data(as_text=True)
+    assert "読み取りの注意（ホットペッパー）：コース一覧：ページのリンクは16件ですが、読み取れたのは15件です" in page
+    assert "承認して非掲載にする" not in page
+
+
+def test_real_extra_stays_approvable_and_coupons_fall_back_to_course_page(client, monkeypatch):
+    con, calls = _pipeline(client, monkeypatch, hp_snap()["courses"])           # 16件すべて読めた状態
+    extra = con.execute("SELECT * FROM media_items WHERE kind='course_extra'").fetchall()
+    assert len(extra) == 1 and extra[0]["ref"].startswith("【全席完全個室】お席のみ予約")   # 本当にヒトサラだけにあるものは残る
+    assert con.execute("SELECT COUNT(*) FROM media_items WHERE kind='course_extra_unsure'").fetchone()[0] == 0
+    assert ("hp", True) in calls                                                 # 専用ページで0件 → コース一覧ページで補う
+    snap = client.get("/admin/media/store/umidori/snapshot").get_json()
+    assert len(snap["hp"]["coupons"]) == 1 and "course_text" not in snap["hp"]
+    assert any("コース一覧ページの記載で補いました" in w for w in snap["hp"]["warnings"])
+
+
+def test_token_ignores_stray_whitespace_and_debug_view(client, monkeypatch):
+    monkeypatch.setenv("REPLY_RUN_TOKEN", "tok\n")
+    assert client.get("/admin/media/tasks", headers={"X-Run-Token": " tok "}).status_code == 200
+    assert client.get("/admin/media/tasks", headers={"X-Run-Token": "••••"}).status_code == 403
+    monkeypatch.setattr(F, "get", lambda url: "<body>" + "x" * 30 + "<p>【幹事無料】日～木限定</p></body>")
+    assert client.get("/admin/media/store/umidori/debug?side=hp&page=coupon&q=幹事無料").status_code == 302   # 要ログイン
+    client.post("/admin/login", data={"password": os.environ["ADMIN_PASSWORD"]})
+    d = client.get("/admin/media/store/umidori/debug?side=hp&page=coupon&q=幹事無料").get_json()
+    assert d["url"].endswith("/map/") and d["in_html"]["count"] == 1 and d["in_text"]["count"] == 1

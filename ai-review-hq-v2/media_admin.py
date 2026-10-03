@@ -32,7 +32,9 @@ STALE_MIN = 60   # これ以上「実行中」のままなら落ちたとみな�
 
 
 def _now(): return datetime.now(JST).isoformat(timespec="seconds")
-def _tok(): return bool(os.environ.get("REPLY_RUN_TOKEN")) and request.headers.get("X-Run-Token") == os.environ.get("REPLY_RUN_TOKEN")
+def _tok():
+    want = os.environ.get("REPLY_RUN_TOKEN", "").strip()   # 前後の空白・改行の入り込みは無視する
+    return bool(want) and request.headers.get("X-Run-Token", "").strip() == want
 
 
 TOKEN_PATHS = ("/admin/media/run", "/admin/media/tasks", "/admin/media/tasks/done", "/admin/media/recon", "/admin/media/notify")
@@ -118,14 +120,51 @@ def snapshot(side, store):
 
     basics = step("店舗トップ", AI.extract_basics, urls["top"])
     snap["basics"] = {k: ("" if v is None else str(v)) for k, v in (basics or {}).items()}
-    snap["courses"] = _clean_courses(step("コース一覧", AI.extract_courses, urls["course"]))
+
+    course_text = {}
+    def courses(side_, text):
+        course_text["t"] = text
+        return AI.extract_courses(side_, text)
+    snap["courses"] = _clean_courses(step("コース一覧", courses, urls["course"]))
+    links = F.course_links(course_text.get("t", ""))
+    snap["course_links"] = len(links)
+    snap["course_incomplete"] = len(snap["courses"]) < len(links)
+    if snap["course_incomplete"]:
+        snap["warnings"].append(f"コース一覧：ページのリンクは{len(links)}件ですが、読み取れたのは{len(snap['courses'])}件です（読み落としの可能性）")
+    snap["course_text"] = D.norm(course_text.get("t", ""))   # 「ヒトサラにだけある」の裏取り用（保存前に取り除く）
+
+    def coupons(text):
+        return [c for c in AI.extract_coupons(side, text) if isinstance(c, dict) and c.get("title")]
     try:
-        snap["coupons"] = [c for c in AI.extract_coupons(side, F.page_text(urls["coupon"]))
-                           if isinstance(c, dict) and c.get("title")]
+        snap["coupons"] = coupons(F.page_text(urls["coupon"]))
     except Exception as e:   # クーポンページが無い店もある。全体は止めない
         snap["coupons"] = []
-        snap["warnings"].append(f"クーポンを読めませんでした（{type(e).__name__}）")
+        snap["warnings"].append(f"クーポンページを読めませんでした（{type(e).__name__}）")
+    if side == "hp" and not snap["coupons"] and "クーポン" in course_text.get("t", ""):
+        try:   # クーポンページから取れないときは、コース一覧ページに載っているクーポンで補う
+            snap["coupons"] = coupons(course_text["t"])
+        except Exception:
+            pass
+        snap["warnings"].append("クーポン：専用ページから読み取れなかったため、コース一覧ページの記載で補いました"
+                                if snap["coupons"] else "クーポン：ページに記載がありそうですが0件でした（読み落としの可能性）")
     return snap
+
+
+def verify_extras(items, hp):
+    """「ヒトサラにだけあるコース」の裏取り。プラン名の主な語句がホットペッパーのコースページに載っていれば、
+    読み落としの可能性が高いので「要確認」に下げ、自動で非掲載にできないようにする"""
+    page = hp.get("course_text", "")
+    for it in items:
+        if it["kind"] != "course_extra":
+            continue
+        words = [w for w in re.split(r"[【】・/／、,!！?？◆◎♪()（）]|など|が", D.norm(it.get("ref") or "")) if len(w) >= 5]
+        found = [w for w in words if w in page]
+        if hp.get("course_incomplete") or (words and len(found) * 2 >= len(words)):
+            it.update(kind="course_extra_unsure", level="info",
+                      title="要確認（読み落としの可能性）：" + it["title"],
+                      note="ホットペッパーのページに同じ語句が載っている、または読み取りに注意が出ています。"
+                           "ホットペッパーに本当に無いかを確認してください。自動で非掲載にはできません。")
+    return items
 
 
 # ---------------------------------------------------------------- 原稿づくり
@@ -200,7 +239,9 @@ def run_store(con, run_id, store):
     skip = {r["sig"] for r in con.execute(   # 「対象外」と「承認済み・反映待ち」は作り直さない
         "SELECT sig FROM media_items WHERE store_key=? AND status IN ('ignored','approved')", (store["key"],))}
     rows = []
-    for item in D.diff_all(hp, hs):
+    items = verify_extras(D.diff_all(hp, hs), hp)
+    hp.pop("course_text", None); hs.pop("course_text", None)
+    for item in sorted(items, key=lambda x: D.LEVEL_ORDER[x["level"]]):
         sig = _sig(store["key"], item)
         if sig in skip:
             continue
@@ -369,6 +410,8 @@ TPL_STORE = """{% extends "admin/base.html" %}{% block title %}{{s.name}}｜媒�
   {% if snap %}／ 読み取り：ホットペッパー コース{{snap.hp.courses|length}}件・クーポン{{snap.hp.coupons|length}}件、
   ヒトサラ コース{{snap.hs.courses|length}}件・クーポン{{snap.hs.coupons|length}}件{% endif %}</p>
 {% if s.last_error %}<p class="flash">前回エラー：{{s.last_error}}</p>{% endif %}
+{% if snap %}{% for side, label in (('hp', 'ホットペッパー'), ('hs', 'ヒトサラ')) %}{% for w in snap[side].get('warnings', []) %}
+<p class="flash">読み取りの注意（{{label}}）：{{w}}</p>{% endfor %}{% endfor %}{% endif %}
 {% if not items and s.checked_at %}<div class="panel"><p class="empty">ズレはありません。</p></div>{% endif %}
 {% for it in items %}
 <div class="panel">
@@ -466,6 +509,19 @@ def snapshot_view(key):
     con = db(); _store(con, key)
     return jsonify({r["side"]: {"fetched_at": r["fetched_at"], **json.loads(r["data"])}
                     for r in con.execute("SELECT * FROM media_snaps WHERE store_key=?", (key,))})
+
+
+@media_bp.route("/store/<key>/debug")
+def debug_view(key):
+    """読み取りの不具合調査用。?side=hp|hs&page=top|course|coupon&q=探す語句"""
+    con = db(); s = _store(con, key)
+    side, page = request.args.get("side", "hp"), request.args.get("page", "course")
+    urls = F.hp_urls(s["hp_url"]) if side == "hp" else F.hs_urls(s["hs_id"])
+    if page not in urls: abort(404)
+    try:
+        return jsonify(F.debug_page(urls[page], request.args.get("q", "")[:60]))
+    except Exception as e:
+        return jsonify(error=f"{type(e).__name__}: {str(e)[:200]}", url=urls[page]), 502
 
 
 @media_bp.route("/stores/save", methods=["POST"])
