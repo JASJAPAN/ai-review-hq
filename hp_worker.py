@@ -28,7 +28,7 @@ def api(path, method="GET", body=None):
     return r.json() if r.text.startswith(("{", "[")) else r.text
 
 def notify(msg):
-    try: api("/notify", "POST", {"text": msg})
+    try: api("/notify", "POST", {"text": str(msg)[:3000]})
     except Exception: pass
 
 def outline(page, limit=500):
@@ -48,9 +48,11 @@ def login(page, acct):
     page.wait_for_url(re.compile(r"/CLN/topMenu/"), timeout=120000)   # 「認証中...」を通過してトップメニューまで待つ
     page.wait_for_load_state("networkidle", timeout=60000)
 
+REVIEW_LIST_URL = "https://www.cms.hotpepper.jp/CLP/ccm010/showReportListAllForAuth"
+
 def open_review_list(page, unreplied_only=True):
-    page.get_by_role("link", name=re.compile("口コミ一覧")).first.click()
-    page.wait_for_load_state("networkidle", timeout=60000)
+    # 指示書対応: メニューのリンクを探さず、口コミ一覧を直接GETで開く
+    page.goto(REVIEW_LIST_URL, wait_until="networkidle", timeout=60000)
     if unreplied_only and page.locator("a[href*='showReportListNoComment']").count():
         page.locator("a[href*='showReportListNoComment']").first.click(); page.wait_for_load_state("networkidle", timeout=60000)
 
@@ -133,12 +135,24 @@ def main():
                 except Exception: pass
             finally:
                 ctx.close()
-        # --- 承認済みの違反報告を自動送信（ホットペッパーのみ。Googleは手動のまま） ---
+        # --- 承認済みの違反報告を自動送信（ホットペッパー実画面仕様に準拠） ---
+        KBN_MAP = [  # policy_clause/理由 → 違反ポリシー区分
+            (("体験に基づ", "来店", "利用してい"), "01"), (("無関係", "関係がない", "関係のない"), "02"),
+            (("事実ではない", "事実に反", "虚偽"), "03"), (("誹謗", "中傷", "差別", "人権"), "04"),
+            (("法律", "条例", "犯罪"), "05"), (("権利", "著作", "肖像", "個人情報", "プライバシー"), "06"),
+            (("商業", "宣伝", "営業目的"), "07"), (("衛生"), "08"),
+        ]
+        def pick_kbn(rp):
+            basis = (rp.get("policy_clause", "") or "") + (rp.get("report_reason", "") or "")
+            for keys, kbn in KBN_MAP:
+                if any(k in basis for k in (keys if isinstance(keys, tuple) else (keys,))):
+                    return kbn
+            return "99"
         t = api("/tasks") if MODE == "run" else {}
         approved_hp = [r for r in t.get("reports", []) if r.get("platform") == "hotpepper"]
         sent = 0
         for acct in accts:
-            limit = int(os.environ.get("REPORT_DAILY_LIMIT", "3"))  # 大量一斉報告を避け審査通過率を守る
+            limit = int(os.environ.get("REPORT_DAILY_LIMIT", "3"))
             mine = [r for r in approved_hp if r["store"] == acct["name"]][:limit]
             if not mine:
                 continue
@@ -150,36 +164,34 @@ def main():
                     try:
                         open_review_list(page, unreplied_only=False)
                         ext = rp["review_id"].replace("hp:", "", 1)
-                        el = find_item(page, ext, rp)
+                        el = None
+                        for _ in range(12):  # 最大12ページ探索（「次>」送り）
+                            el = find_item(page, ext, rp)
+                            if el is not None: break
+                            nxt = page.get_by_role("link", name=re.compile("次"))
+                            if not nxt.count(): break
+                            nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
                         if el is None:
-                            errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）")
-                            continue
-                        link = el.get_by_text("違反報告", exact=False)
-                        if not link.count():
-                            link = el.get_by_text("通報", exact=False)
-                        if not link.count():
-                            errors.append(f"{acct['name']} 違反報告: 報告リンクが見つからない（{rp['review_id']}）。画面仕様の確認が必要")
-                            continue
-                        link.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
-                        box = page.locator("textarea")
-                        if box.count():
-                            box.first.fill(rp.get("report_reason", "")[:800])
-                        btn = page.get_by_role("button", name=re.compile("送信|報告する|確認"))
+                            errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）"); continue
+                        btn = el.locator("input.policyButton")
                         if not btn.count():
-                            btn = page.locator("input[type='button'][value*='送信'], input[type='submit']")
+                            # policyDisabledButton = 再審査中/掲載不可（報告不可）→ 完了扱いにして一覧から除外
+                            api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
+                            errors.append(f"{acct['name']} 違反報告: 既に再審査中/掲載不可のためスキップ（{rp['review_id']}）"); continue
                         btn.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
-                        confirm = page.get_by_role("button", name=re.compile("送信|報告する"))
-                        if not confirm.count():
-                            confirm = page.locator("input[type='button'][onclick*='doRegist']")
-                        if confirm.count():
-                            confirm.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
-                        api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
-                        sent += 1
+                        if "/ccm030/" not in page.url:
+                            errors.append(f"{acct['name']} 違反報告: フォームに遷移できず（{rp['review_id']} url={page.url}）"); continue
+                        page.locator(f"input[name='reportClaimKbn'][value='{pick_kbn(rp)}']").first.check()
+                        page.locator("textarea[name='reason']").fill((rp.get("report_reason", "") or "")[:1400])
+                        page.locator("input[type='button'][value='報告する']").first.click()
+                        page.wait_for_load_state("networkidle", timeout=60000)
+                        body = page.inner_text("body")
+                        if "/doComplete" in page.url or "報告を完了しました" in body:
+                            api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"}); sent += 1
+                        else:
+                            errors.append(f"{acct['name']} 違反報告: 完了画面を確認できず（{rp['review_id']} url={page.url}）")
                     except Exception as e:
                         errors.append(f"{acct['name']} 違反報告失敗（{rp['review_id']}）: {str(e)[:120]}")
-                        try: api("/recon", "POST", {"at": datetime.datetime.now().isoformat(), "error": f"report {rp['review_id']}: {str(e)[:300]}",
-                                 "pages": [{"name": "report_error", "url": page.url, "outline": outline(page, 300), "png": base64.b64encode(page.screenshot(type="jpeg", quality=45, full_page=False)).decode()}]})
-                        except Exception: pass
             finally:
                 ctx.close()
         browser.close()
