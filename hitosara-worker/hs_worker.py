@@ -497,7 +497,8 @@ def main():
             results += process_store(browser, hs_id, accts[hs_id], by_store.get(hs_id, []), pages, log)
         browser.close()
     for line in log:
-        say(line)
+        if "確認画面のボタン" not in line:   # 途中で出力済みの行は繰り返さない
+            say(line)
     for t, ok, msg in results:
         say(f"{t['store']} {t['type']} {'OK' if ok else '中止'} {msg}")
         log.append(f"{t['store']}｜{t['type']}｜{'OK' if ok else '中止'}｜{msg}")

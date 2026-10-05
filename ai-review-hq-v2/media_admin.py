@@ -80,6 +80,8 @@ def db():
     CREATE TABLE IF NOT EXISTS media_snaps(store_key TEXT, side TEXT, data TEXT, fetched_at TEXT,
         PRIMARY KEY(store_key, side));
     """)
+    if "auto_approve" not in {r["name"] for r in con.execute("PRAGMA table_info(media_stores)")}:
+        con.execute("ALTER TABLE media_stores ADD COLUMN auto_approve INTEGER DEFAULT 0")
     have = {r["name"] for r in con.execute("PRAGMA table_info(media_items)")}
     for col in ("ref", "write_text", "write_result"):   # 自動反映用の列（先に入れた環境にも後から足す）
         if col not in have:
@@ -147,14 +149,18 @@ def snapshot(side, store):
         snap["warnings"].append(f"コース一覧：ページのリンクは{len(links)}件ですが、読み取れたのは{len(snap['courses'])}件です（読み落としの可能性）")
     snap["course_text"] = D.norm(course_text.get("t", ""))   # 「ヒトサラにだけある」の裏取り用（保存前に取り除く）
 
-    def coupons(text):
-        if side == "hp":
-            direct = F.hp_coupons_from_text(text)
-            if direct:
-                return direct
+    def ai_coupons(text):
         return [c for c in AI.extract_coupons(side, text) if isinstance(c, dict) and c.get("title")]
+
+    def coupons(text):   # 文字にしたページから読む
+        return (F.hp_coupons_from_text(text) if side == "hp" else []) or ai_coupons(text)
+
     try:
-        snap["coupons"] = coupons(F.page_text(urls["coupon"]))
+        if side == "hp":   # ホットペッパーは、まずHTMLの決まった場所から直接読む
+            page = F.get(urls["coupon"])
+            snap["coupons"] = F.hp_coupons_from_html(page) or coupons(F.to_text(page))
+        else:
+            snap["coupons"] = coupons(F.page_text(urls["coupon"]))
     except Exception as e:   # クーポンページが無い店もある。全体は止めない
         snap["coupons"] = []
         snap["warnings"].append(f"クーポンページを読めませんでした（{type(e).__name__}）")
@@ -201,7 +207,7 @@ def fit(text, limit, label, side="owner"):
     if AI.available():
         for _ in range(2):
             try:
-                short = AI.shorten(text, limit, label).strip()
+                short = AI.shorten(text, max(10, int(limit * 0.92)), label).strip()
             except Exception:
                 break
             if short and D.hs_len(short, side) <= limit:
@@ -247,6 +253,26 @@ def make_drafts(item, store):
     return []
 
 
+AUTO_KINDS = ("catch", "course_name")   # 承認なしで自動反映してよい種類（文言だけの差）
+
+
+def auto_text(kind, ref, drafts, store):
+    """承認なしで反映してよい項目なら、反映する文言を返す。条件に合わなければ None。
+    対象はキャッチコピーとコース名だけ。ホットペッパーの文言が「そのまま」入る場合に限る
+    （AIが縮めた文言・切り詰めた文言・料金・非掲載・紹介文は、必ず人が見てから承認する）"""
+    if kind not in AUTO_KINDS or not drafts or not F.HS_ID_RE.match(store["hs_id"] or ""):
+        return None
+    d = drafts[0]
+    text = (d.get("text") or "").strip()
+    if d.get("how") != "そのまま" or not text or "\n" in text:
+        return None
+    if d.get("limit") and D.hs_len(text, d.get("side", "owner")) > d["limit"]:
+        return None
+    if kind == "course_name" and (not store["use_reserve"] or not ref):
+        return None
+    return text
+
+
 def _sig(store_key, item):
     raw = "|".join([store_key, item["kind"], D.norm(item["title"]), D.norm(item["hp"]), D.norm(item["hs"])])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
@@ -276,15 +302,17 @@ def run_store(con, run_id, store):
                 continue   # 自動反映済み。公開ページへの反映待ち
             item["note"] = (f"{written[sig][:10]} に自動反映しましたが、公開ページにまだ出ていません。"
                             "ヒトサラの管理画面で登録内容を確認してください。 " + (item.get("note") or "")).strip()
+        drafts = make_drafts(item, store)
+        text = auto_text(item["kind"], item.get("ref", ""), drafts, store) if store["auto_approve"] else None
         rows.append((run_id, store["key"], sig, item["level"], item["kind"], item["title"], item["hp"], item["hs"],
-                     item["field"], item["note"], item.get("ref", ""),
-                     json.dumps(make_drafts(item, store), ensure_ascii=False), "open", _now()))
+                     item["field"], item["note"], item.get("ref", ""), json.dumps(drafts, ensure_ascii=False),
+                     "approved" if text else "open", text or "", _now()))
     for side, snap in (("hp", hp), ("hs", hs)):
         con.execute("INSERT OR REPLACE INTO media_snaps(store_key,side,data,fetched_at) VALUES(?,?,?,?)",
                     (store["key"], side, json.dumps(snap, ensure_ascii=False), _now()))
     con.execute("DELETE FROM media_items WHERE store_key=? AND status IN ('open','failed')", (store["key"],))
-    con.executemany("""INSERT INTO media_items(run_id,store_key,sig,level,kind,title,hp,hs,field,note,ref,drafts,status,created_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+    con.executemany("""INSERT INTO media_items(run_id,store_key,sig,level,kind,title,hp,hs,field,note,ref,drafts,status,write_text,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     con.execute("UPDATE media_stores SET checked_at=?, last_error='' WHERE key=?", (_now(), store["key"]))
     con.commit()
     return len(rows)
@@ -403,7 +431,7 @@ TPL_INDEX = """{% extends "admin/base.html" %}{% block title %}媒体管制室{%
   <tr><td><a href="{{url_for('media.store', key=s.key)}}">{{s.name}}</a>
         {% if s.note %}<span class="slug">{{s.note}}</span>{% endif %}
         {% if s.last_error %}<span class="improve">前回エラー：{{s.last_error}}</span>{% endif %}</td>
-      <td>{{'○' if s.enabled else '—'}}</td>
+      <td>{{'○' if s.enabled else '—'}}{% if s.auto_approve %}<span class="slug">承認なし</span>{% endif %}</td>
       <td class="{{'warn' if c.get('high')}}">{{c.get('high', 0)}}</td><td>{{c.get('mid', 0)}}</td>
       <td>{{c.get('low', 0)}}</td><td>{{c.get('info', 0)}}</td>
       <td class="nowrap">{{s.checked_at[:10] or '未実施'}}</td>
@@ -422,6 +450,8 @@ TPL_INDEX = """{% extends "admin/base.html" %}{% block title %}媒体管制室{%
       <option value="0" {{'selected' if edit and not edit.use_reserve}}>オーナー管理（コースメニュー）</option></select></label>
     <label>メモ<input name="note" value="{{edit.note if edit else ''}}"></label>
     <label><input type="checkbox" name="enabled" value="1" style="display:inline;width:auto" {{'checked' if edit and edit.enabled}}> 月1チェックの対象にする</label>
+    <label><input type="checkbox" name="auto_approve" value="1" style="display:inline;width:auto" {{'checked' if edit and edit.auto_approve}}> キャッチコピーとコース名の文言の差は、承認なしで自動反映する</label>
+    <p class="note">料金の変更・非掲載・AIが縮めた文言・紹介文は、この設定に関係なく承認が必要です。</p>
     <button class="btn primary">保存</button>
   </form>
 </div>
@@ -436,6 +466,9 @@ TPL_STORE = """{% extends "admin/base.html" %}{% block title %}{{s.name}}｜媒�
   <a class="btn small" href="{{url_for('media.snapshot_view', key=s.key)}}">読み取った内容を見る</a>
   <form class="inline" method="post" action="{{url_for('media.run')}}"><input type="hidden" name="store" value="{{s.key}}">
     <button class="btn small primary">この店だけチェック</button></form>
+  {% if bulk %}<form class="inline" method="post" action="{{url_for('media.approve_all', key=s.key)}}"
+        onsubmit="return confirm('キャッチコピーとコース名の文言の差 {{bulk}} 件を、まとめて承認します。ホットペッパーの文言でヒトサラを書き換えます。よろしいですか？')">
+    <button class="btn small primary">文言の差 {{bulk}} 件をまとめて承認</button></form>{% endif %}
 </div>
 <p class="note">最終チェック：{{s.checked_at[:16].replace('T',' ') or '未実施'}}
   {% if snap %}／ 読み取り：ホットペッパー コース{{snap.hp.courses|length}}件・クーポン{{snap.hp.coupons|length}}件、
@@ -535,7 +568,8 @@ def store(key):
     cutoff = (datetime.now(JST) - timedelta(days=GRACE_DAYS)).isoformat(timespec="seconds")
     waiting = con.execute("SELECT COUNT(*) FROM media_items WHERE store_key=? AND status='written' AND closed_at>=?",
                           (key, cutoff)).fetchone()[0]
-    return render_template_string(TPL_STORE, s=s, items=items, closed=closed, labels=D.LEVEL_LABEL, waiting=waiting, grace=GRACE_DAYS,
+    bulk = sum(1 for it in items if it["status"] != "approved" and auto_text(it["kind"], it["ref"], it["drafts"], s))
+    return render_template_string(TPL_STORE, s=s, items=items, closed=closed, labels=D.LEVEL_LABEL, waiting=waiting, grace=GRACE_DAYS, bulk=bulk,
                                   snap=snaps if len(snaps) == 2 else None)
 
 
@@ -573,11 +607,12 @@ def stores_save():
         enabled = 0
         flash("ホットペッパーURLとヒトサラの店舗番号（10桁）の両方が必要です。対象にはせず保存しました。")
     key = f.get("key") or ("s" + hashlib.sha1((name + _now()).encode()).hexdigest()[:8])
-    vals = (name, hp_url, hs_id, int(f.get("use_reserve", "1") == "1"), enabled, f.get("note", "").strip()[:200])
+    vals = (name, hp_url, hs_id, int(f.get("use_reserve", "1") == "1"), enabled, f.get("note", "").strip()[:200],
+            1 if f.get("auto_approve") else 0)
     if con.execute("SELECT 1 FROM media_stores WHERE key=?", (key,)).fetchone():
-        con.execute("UPDATE media_stores SET name=?,hp_url=?,hs_id=?,use_reserve=?,enabled=?,note=? WHERE key=?", vals + (key,))
+        con.execute("UPDATE media_stores SET name=?,hp_url=?,hs_id=?,use_reserve=?,enabled=?,note=?,auto_approve=? WHERE key=?", vals + (key,))
     else:
-        con.execute("INSERT INTO media_stores(name,hp_url,hs_id,use_reserve,enabled,note,key,sort) VALUES(?,?,?,?,?,?,?,999)", vals + (key,))
+        con.execute("INSERT INTO media_stores(name,hp_url,hs_id,use_reserve,enabled,note,auto_approve,key,sort) VALUES(?,?,?,?,?,?,?,?,999)", vals + (key,))
     con.commit()
     flash(f"「{name}」を保存しました。")
     return redirect(url_for("media.index"))
@@ -627,6 +662,20 @@ def item_approve(item_id):
     con.commit()
     flash("承認しました。次のワーカー実行でヒトサラに反映します。")
     return back
+
+
+@media_bp.route("/store/<key>/approve_all", methods=["POST"])
+def approve_all(key):
+    """キャッチコピーとコース名のうち、ホットペッパーの文言がそのまま入るものをまとめて承認する"""
+    con = db(); s = _store(con, key); n = 0
+    for r in con.execute("SELECT * FROM media_items WHERE store_key=? AND status IN ('open','failed')", (key,)).fetchall():
+        text = auto_text(r["kind"], r["ref"], json.loads(r["drafts"] or "[]"), s)
+        if text:
+            con.execute("UPDATE media_items SET status='approved', write_text=?, write_result='', closed_at='' WHERE id=?", (text, r["id"]))
+            n += 1
+    con.commit()
+    flash(f"{n}件を承認しました。次のワーカー実行でヒトサラに反映します。" if n else "まとめて承認できる項目はありません。")
+    return redirect(url_for("media.store", key=key))
 
 
 @media_bp.route("/tasks")

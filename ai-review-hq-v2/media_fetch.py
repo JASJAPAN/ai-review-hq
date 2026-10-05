@@ -1,6 +1,7 @@
 """媒体管制室：公開ページの取得とテキスト化。
 ログイン不要の公開ページだけを読む（ホットペッパー / ヒトサラ）。管理画面には触れない。
 """
+import html as html_mod
 import os, re, time
 from html.parser import HTMLParser
 import requests
@@ -70,14 +71,18 @@ class _Lin(HTMLParser):
             return
         if self.stack:
             return
-        if tag in _BLOCK:
+        if tag in _BLOCK and not self._in_kept_link():
             self.out.append("\n")
         if tag == "a":
             href = dict(attrs).get("href") or ""
             self.href.append(href if KEEP_LINK.search(href.split("?")[0]) else "")
 
+    def _in_kept_link(self):
+        """コース詳細リンクの中にいるか。コース名が <br> で2行に分かれていても1行として読むため"""
+        return bool(self.href and self.href[-1])
+
     def handle_startendtag(self, tag, attrs):
-        if tag in _BLOCK and not self.stack:
+        if tag in _BLOCK and not self.stack and not self._in_kept_link():
             self.out.append("\n")
 
     def handle_endtag(self, tag):
@@ -92,7 +97,7 @@ class _Lin(HTMLParser):
             href = self.href.pop()
             if href:
                 self.out.append(f" ⟦{href.split('?')[0]}⟧ ")
-        if tag in _BLOCK:
+        if tag in _BLOCK and not self._in_kept_link():
             self.out.append("\n")
 
     def handle_data(self, data):
@@ -193,12 +198,45 @@ def hp_courses_from_text(text):
     return out
 
 
+def _plain(fragment):
+    """HTMLの断片から文字だけを取り出す（<br> は詰める。見出しの途中で行が分かれていても1つにする）"""
+    t = re.sub(r"<br\s*/?>", "", fragment or "", flags=re.I)
+    t = re.sub(r"<[^>]+>", "", t)
+    return re.sub(r"\s+", " ", html_mod.unescape(t)).strip()
+
+
+def hp_coupons_from_html(html):
+    """ホットペッパーのクーポンページのHTMLから直接読む（li.jscCouponWrap の中の p.couponName）。
+    2026/10/6：ガットネーロで、見出しが2行に分かれているクーポンの前半が欠けた対策"""
+    out, seen = [], set()
+    for block in re.split(r'<li[^>]*class="[^"]*jscCouponWrap[^"]*"', html or "")[1:]:
+        m = re.search(r'<p[^>]*class="[^"]*couponName[^"]*"[^>]*>(.*?)</p>', block, re.S)
+        if not m:
+            continue
+        title = _plain(m.group(1))
+        table = block.split("</table>")[0]
+        cond = " ".join(f"{_plain(th)} {_plain(td)}" for th, td in
+                        re.findall(r"<th[^>]*>(.*?)</th>\s*<td[^>]*>(.*?)</td>", table, re.S))
+        key = re.sub(r"\s+", "", title)
+        if title and key not in seen:
+            seen.add(key)
+            out.append({"title": title, "condition": cond})
+    return out
+
+
 def hp_coupons_from_text(text):
+    """文字にしたページから読む（HTMLから読めなかったときの予備）。見出しが複数行に分かれていればつなぐ"""
     lines, out, seen = [l.strip() for l in (text or "").split("\n")], [], set()
+    stops = {"このクーポンが使えるコース", "クーポン", "【提示条件】", "【利用条件】", "【有効期限】"}
     for i, line in enumerate(lines):
         if line != "【提示条件】" or i == 0:
             continue
-        title, cond, j = lines[i - 1], [], i
+        parts, k = [], i - 1
+        while k >= 0 and len(parts) < 3 and lines[k] not in stops and not (k >= 1 and lines[k - 1] == "【有効期限】"):
+            parts.insert(0, lines[k]); k -= 1
+            if parts[0].startswith("【"):   # 見出しは【…】で始まる。そこまで戻ったら終わり
+                break
+        title, cond, j = "".join(parts), [], i
         while j < len(lines) and lines[j] != "このクーポンが使えるコース" \
                 and not (j > i and j + 1 < len(lines) and lines[j + 1] == "【提示条件】"):
             cond.append(lines[j]); j += 1

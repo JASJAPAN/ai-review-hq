@@ -170,6 +170,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_SYNC_INLINE", "1")
     monkeypatch.setenv("REPLY_RUN_TOKEN", "tok")
     monkeypatch.setattr(F, "page_text", lambda url, limit=None: url)
+    monkeypatch.setattr(F, "get", lambda url: "")                      # 外部サイトには接続しない
     monkeypatch.setattr(AI, "available", lambda: True)
     monkeypatch.setattr(AI, "extract_basics", lambda side, text: (hp_snap() if side == "hp" else hs_snap())["basics"])
     monkeypatch.setattr(AI, "extract_courses", lambda side, text: (hp_snap() if side == "hp" else hs_snap())["courses"])
@@ -567,3 +568,95 @@ def test_written_item_is_not_reopened_while_public_page_lags(client):
     client.post("/admin/media/run", headers={"X-Run-Token": "tok"})              # 日数が過ぎても公開ページが旧名のまま
     again = M.db().execute("SELECT * FROM media_items WHERE sig=? AND status='open'", (name["sig"],)).fetchone()
     assert again and "自動反映しましたが、公開ページにまだ出ていません" in again["note"]
+
+
+# ------------------------------------------------------------ 承認の手間を減らす（まとめて承認・承認なしの自動反映）
+
+def test_approve_all_covers_only_plain_wording_items(client):
+    con = _run_and_login(client)
+    page = client.get("/admin/media/store/umidori").get_data(as_text=True)
+    assert "文言の差 10 件をまとめて承認" in page                                   # キャッチコピー1＋コース名9
+    client.post("/admin/media/store/umidori/approve_all")
+    kinds = [r["kind"] for r in M.db().execute("SELECT kind FROM media_items WHERE status='approved'")]
+    assert sorted(set(kinds)) == ["catch", "course_name"] and len(kinds) == 10
+    left = {r["kind"] for r in M.db().execute("SELECT kind FROM media_items WHERE status='open'")}
+    assert "course_extra" in left and "coupon_missing" in left                      # 非掲載・クーポンなどは承認されない
+    tasks = client.get("/admin/media/tasks", headers={"X-Run-Token": "tok"}).get_json()["tasks"]
+    assert len(tasks) == 10 and all(t["text"] for t in tasks)
+
+
+def test_auto_approve_store_skips_the_button_but_never_for_risky_items(client, monkeypatch):
+    snap = hs_snap(); snap["courses"][2]["price"] = 4000                              # 料金の違いも混ぜる
+    monkeypatch.setattr(AI, "extract_courses", lambda side, text: (hp_snap() if side == "hp" else snap)["courses"])
+    client.post("/admin/login", data={"password": os.environ["ADMIN_PASSWORD"]})
+    client.get("/admin/media/")                                                       # 初期データを作る
+    client.post("/admin/media/stores/save", data={"key": "umidori", "name": "うみどり 天文館店", "enabled": "1", "auto_approve": "1",
+                                                   "hp_url": "https://www.hotpepper.jp/strJ003474523/", "hs_id": "0020004633", "use_reserve": "1"})
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
+    con = M.db()
+    st = {}
+    for r in con.execute("SELECT kind, status FROM media_items"):
+        st.setdefault(r["kind"], set()).add(r["status"])
+    assert st["catch"] == {"approved"} and st["course_name"] == {"approved"}          # 文言の差は承認なしで反映待ちに
+    assert st["price"] == {"open"} and st["course_extra"] == {"open"}                 # 料金・非掲載は必ず人が承認
+    tasks = client.get("/admin/media/tasks", headers={"X-Run-Token": "tok"}).get_json()["tasks"]
+    assert {t["type"] for t in tasks} == {"intro_catch", "plan_name"}
+
+
+def test_auto_text_rejects_shortened_or_overlong_drafts():
+    store = {"hs_id": "0020004633", "use_reserve": 1}
+    ok = [{"text": "予約殺到！薩摩地鶏×漁港直送旬魚の居酒屋", "how": "そのまま", "limit": 40, "side": "owner"}]
+    assert M.auto_text("catch", "", ok, store) == ok[0]["text"]
+    assert M.auto_text("catch", "", [dict(ok[0], how="AIで短縮")], store) is None
+    assert M.auto_text("catch", "", [dict(ok[0], how="末尾を切り詰め（要手直し）")], store) is None
+    assert M.auto_text("catch", "", [dict(ok[0], text="あ" * 41)], store) is None
+    assert M.auto_text("intro", "", ok, store) is None and M.auto_text("price", "x", ok, store) is None
+    assert M.auto_text("course_name", "", ok, store) is None                          # 直す先のプラン名が分からないもの
+    assert M.auto_text("course_name", "旧プラン名", ok, dict(store, use_reserve=0)) is None
+
+
+# ------------------------------------------------------------ 見出しが2行に分かれたクーポン・コース名（2026/10/6 ガットネーロ）
+
+GATTO_COUPON_HTML = """<ul>
+<li class="jscCouponWrap" data-coupon-no="h01"><div class="nameSection">
+  <p class="couponName">【早割&amp;遅割】17時までにご来店or21時以降ご来店で<br />コースから500円OFF！</p>
+  <img src="x.gif" alt="値引き・割引" class="couponLabel" /></div>
+  <div class="detailSection"><table class="detailTable">
+    <tr><th>【提示条件】</th><td>予約時</td></tr><tr><th>【利用条件】</th><td>他券併用不可</td></tr>
+    <tr><th class="expirationDate">【有効期限】</th><td class="expirationDate">なし</td></tr></table></div></li>
+<li class="jscCouponWrap" data-coupon-no="h02"><div class="nameSection">
+  <p class="couponName">【誕生日・記念日】サプライズプレート500円</p></div>
+  <div class="detailSection"><table class="detailTable"><tr><th>【提示条件】</th><td>予約時</td></tr></table></div></li>
+</ul>"""
+
+
+def test_hp_coupon_titles_split_over_two_lines_are_read_whole():
+    rows = F.hp_coupons_from_html(GATTO_COUPON_HTML)
+    assert [r["title"] for r in rows] == ["【早割&遅割】17時までにご来店or21時以降ご来店でコースから500円OFF！",
+                                          "【誕生日・記念日】サプライズプレート500円"]
+    assert rows[0]["condition"] == "【提示条件】 予約時 【利用条件】 他券併用不可 【有効期限】 なし"
+    # 以前の読み方（文字にしてから読む）でも、後半だけにならない
+    via_text = F.hp_coupons_from_text(F.to_text(GATTO_COUPON_HTML))
+    assert via_text[0]["title"] == "【早割&遅割】17時までにご来店or21時以降ご来店でコースから500円OFF！"
+    assert len(F.hp_coupons_from_text(REAL_HP_COUPON_TEXT)) == 4                 # うみどりの実ページも従来どおり読める
+    assert F.hp_coupons_from_html("<p>クーポンはありません</p>") == []
+
+
+def test_course_title_with_line_break_inside_link_stays_whole():
+    html = ('<ul class="courseList"><li><p class="courseCassetteTitle"><a href="/strJ003474527/course_cnod21/">'
+            '≪日～金限定≫【子ねこコース】選べるピッツァ＆ハンバーグ付全9品<br>＋2H［飲放]4000⇒3000円</a></p>'
+            '<p>コース品数：9品／利用人数：2名～</p><p>3,000</p><p>円（税込）</p>'
+            '<a href="/strJ003474527/course_cnod21/" class="reserveBtn">詳細・予約</a></li></ul>')
+    rows = F.hp_courses_from_text(F.to_text(html))
+    assert len(rows) == 1 and rows[0]["price"] == 3000 and rows[0]["items_count"] == 9
+    assert rows[0]["name"] == "≪日～金限定≫【子ねこコース】選べるピッツァ＆ハンバーグ付全9品＋2H［飲放]4000⇒3000円"
+
+
+def test_pipeline_reads_hp_coupons_from_html_first(client, monkeypatch):
+    monkeypatch.setattr(F, "get", lambda url: GATTO_COUPON_HTML if url.endswith("/map/") else "")
+    monkeypatch.setattr(AI, "extract_coupons", lambda side, text: [])            # AIには頼らない
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
+    client.post("/admin/login", data={"password": os.environ["ADMIN_PASSWORD"]})
+    snap = client.get("/admin/media/store/umidori/snapshot").get_json()
+    assert [c["title"][:8] for c in snap["hp"]["coupons"]] == ["【早割&遅割】1", "【誕生日・記念日"]
+    assert snap["hp"]["warnings"] == []
