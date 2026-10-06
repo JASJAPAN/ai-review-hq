@@ -34,14 +34,17 @@ def _guard():
 
 @google_bp.route("/connect")
 def connect():
-    url, state = _flow().authorization_url(access_type="offline", prompt="consent", include_granted_scopes="true")
+    f = _flow()
+    url, state = f.authorization_url(access_type="offline", prompt="consent", include_granted_scopes="true")
     session["g_state"] = state
+    session["g_verifier"] = getattr(f, "code_verifier", None)  # PKCE: callbackで同じverifierを使う
     return redirect(url)
 
 @google_bp.route("/callback")
 def callback():
     if request.args.get("state") != session.get("g_state"): return "state mismatch", 400
-    f = _flow(); f.fetch_token(code=request.args["code"])
+    f = _flow(); f.code_verifier = session.pop("g_verifier", None)
+    f.fetch_token(code=request.args["code"])
     d = load(); d["refresh_token"] = f.credentials.refresh_token or d.get("refresh_token")
     d["connected_at"] = datetime.datetime.now().isoformat(); save(d)
     return redirect(url_for("google.index"))
