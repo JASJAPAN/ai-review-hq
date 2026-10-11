@@ -104,6 +104,62 @@ def recon(page, acct):
     shots.append({"name": f"scraped_{len(items)}件", "url": page.url, "outline": json.dumps(items[:5], ensure_ascii=False, indent=1), "png": ""})
     api("/recon", "POST", {"at": datetime.datetime.now().isoformat(), "pages": shots})
 
+def send_reports_for(page, acct, errors):
+    """この店舗の承認済み違反報告を、同じログインセッション内で送信する（返信と同時並行）"""
+    if MODE != "run":
+        return 0
+    KBN_MAP = [
+        (("体験に基づ", "来店", "利用してい"), "01"), (("無関係", "関係がない", "関係のない"), "02"),
+        (("事実ではない", "事実に反", "虚偽"), "03"), (("誹謗", "中傷", "差別", "人権"), "04"),
+        (("法律", "条例", "犯罪"), "05"), (("権利", "著作", "肖像", "個人情報", "プライバシー"), "06"),
+        (("商業", "宣伝", "営業目的"), "07"), (("衛生",), "08"),
+    ]
+    def pick_kbn(rp):
+        basis = (rp.get("policy_clause", "") or "") + (rp.get("report_reason", "") or "")
+        for keys, kbn in KBN_MAP:
+            if any(k in basis for k in keys):
+                return kbn
+        return "99"
+    try:
+        t = api("/tasks")
+    except Exception:
+        return 0
+    limit = int(os.environ.get("REPORT_DAILY_LIMIT", "3"))
+    mine = [r for r in t.get("reports", []) if r.get("platform") == "hotpepper" and r["store"] == acct["name"]][:limit]
+    sent = 0
+    for rp in mine:
+        try:
+            open_review_list(page, unreplied_only=False)
+            ext = rp["review_id"].replace("hp:", "", 1)
+            el = None
+            for _ in range(12):
+                el = find_item(page, ext, rp)
+                if el is not None: break
+                nxt = page.get_by_role("link", name=re.compile("次"))
+                if not nxt.count(): break
+                nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+            if el is None:
+                errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）"); continue
+            btn = el.locator("input.policyButton")
+            if not btn.count():
+                api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
+                errors.append(f"{acct['name']} 違反報告: 既に再審査中/掲載不可のためスキップ（{rp['review_id']}）"); continue
+            btn.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+            if "/ccm030/" not in page.url:
+                errors.append(f"{acct['name']} 違反報告: フォームに遷移できず（{rp['review_id']}）"); continue
+            page.locator(f"input[name='reportClaimKbn'][value='{pick_kbn(rp)}']").first.check()
+            page.locator("textarea[name='reason']").fill((rp.get("report_reason", "") or "")[:1400])
+            page.locator("input[type='button'][value='報告する']").first.click()
+            page.wait_for_load_state("networkidle", timeout=60000)
+            if "/doComplete" in page.url or "報告を完了しました" in page.inner_text("body"):
+                api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"}); sent += 1
+            else:
+                errors.append(f"{acct['name']} 違反報告: 完了画面を確認できず（{rp['review_id']}）")
+        except Exception as e:
+            errors.append(f"{acct['name']} 違反報告失敗（{rp['review_id']}）: {str(e)[:120]}")
+    return sent
+
+
 def main():
     accts = accounts()
     if not accts: print("no accounts configured"); return
@@ -127,7 +183,8 @@ def main():
                         api("/tasks/done", "POST", {"review_id": tk["review_id"], "kind": "reply"}); done += 1
                     except Exception as e:
                         print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
-                print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件")
+                rep_sent = send_reports_for(page, acct, errors)
+                print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件 / 違反報告{rep_sent}件")
             except Exception as e:
                 traceback.print_exc(); errors.append(f"{acct['name']}: {str(e)[:200]}")
                 try: api("/recon", "POST", {"at": datetime.datetime.now().isoformat(), "error": f"{acct['name']}: {str(e)[:500]}",
@@ -148,59 +205,14 @@ def main():
                 if any(k in basis for k in (keys if isinstance(keys, tuple) else (keys,))):
                     return kbn
             return "99"
-        t = api("/tasks") if MODE == "run" else {}
-        approved_hp = [r for r in t.get("reports", []) if r.get("platform") == "hotpepper"]
-        sent = 0
-        for acct in accts:
-            limit = int(os.environ.get("REPORT_DAILY_LIMIT", "3"))
-            mine = [r for r in approved_hp if r["store"] == acct["name"]][:limit]
-            if not mine:
-                continue
-            ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900})
-            page = ctx.new_page()
-            try:
-                login(page, acct)
-                for rp in mine:
-                    try:
-                        open_review_list(page, unreplied_only=False)
-                        ext = rp["review_id"].replace("hp:", "", 1)
-                        el = None
-                        for _ in range(12):  # 最大12ページ探索（「次>」送り）
-                            el = find_item(page, ext, rp)
-                            if el is not None: break
-                            nxt = page.get_by_role("link", name=re.compile("次"))
-                            if not nxt.count(): break
-                            nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
-                        if el is None:
-                            errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）"); continue
-                        btn = el.locator("input.policyButton")
-                        if not btn.count():
-                            # policyDisabledButton = 再審査中/掲載不可（報告不可）→ 完了扱いにして一覧から除外
-                            api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
-                            errors.append(f"{acct['name']} 違反報告: 既に再審査中/掲載不可のためスキップ（{rp['review_id']}）"); continue
-                        btn.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
-                        if "/ccm030/" not in page.url:
-                            errors.append(f"{acct['name']} 違反報告: フォームに遷移できず（{rp['review_id']} url={page.url}）"); continue
-                        page.locator(f"input[name='reportClaimKbn'][value='{pick_kbn(rp)}']").first.check()
-                        page.locator("textarea[name='reason']").fill((rp.get("report_reason", "") or "")[:1400])
-                        page.locator("input[type='button'][value='報告する']").first.click()
-                        page.wait_for_load_state("networkidle", timeout=60000)
-                        body = page.inner_text("body")
-                        if "/doComplete" in page.url or "報告を完了しました" in body:
-                            api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"}); sent += 1
-                        else:
-                            errors.append(f"{acct['name']} 違反報告: 完了画面を確認できず（{rp['review_id']} url={page.url}）")
-                    except Exception as e:
-                        errors.append(f"{acct['name']} 違反報告失敗（{rp['review_id']}）: {str(e)[:120]}")
-            finally:
-                ctx.close()
+        t2 = {}
+        try: t2 = api("/tasks") if MODE == "run" else {}
+        except Exception: pass
         browser.close()
-        if sent:
-            notify(f"[ホットペッパー] 承認済みの違反報告を{sent}件送信しました。")
-        pend = t.get("reports_pending_count", 0)
+        pend = t2.get("reports_pending_count", 0)
         if pend:
             notify(f"[口コミ管制室] 承認待ちの違反報告候補が{pend}件あります。管理画面で承認/却下してください。")
-        g_manual = [r for r in t.get("reports", []) if r.get("platform") == "google"]
+        g_manual = [r for r in t2.get("reports", []) if r.get("platform") == "google"]
         if g_manual:
             notify(f"[Google] 承認済みの違反報告が{len(g_manual)}件あります。Googleは自動送信非対応のため、クチコミ管理ツールから手動報告してください。")
         if errors: notify("[ホットペッパー] " + " / ".join(errors)); sys.exit(1)
