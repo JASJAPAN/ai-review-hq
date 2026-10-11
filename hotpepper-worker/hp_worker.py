@@ -160,6 +160,43 @@ def send_reports_for(page, acct, errors):
     return sent
 
 
+def check_removals(page, acct, errors):
+    """送信済みの違反報告について、口コミが一覧から消えたか（=削除成功か）を全ページ照合する"""
+    try:
+        t = api("/tasks")
+    except Exception:
+        return 0
+    mine = {r["review_id"]: r for r in t.get("reported", []) if r["store"] == acct["name"]}
+    if not mine:
+        return 0
+    try:
+        open_review_list(page, unreplied_only=False)
+    except Exception as e:
+        errors.append(f"{acct['name']} 削除照合: 一覧を開けず {str(e)[:80]}"); return 0
+    remaining = dict(mine)
+    for _ in range(15):  # 全ページ走査
+        for rid, rp in list(remaining.items()):
+            ext = rid.replace("hp:", "", 1)
+            try:
+                if find_item(page, ext, rp) is not None:
+                    remaining.pop(rid)
+            except Exception:
+                pass
+        if not remaining:
+            break
+        nxt = page.get_by_role("link", name=re.compile("次"))
+        if not nxt.count():
+            break
+        nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+    removed = 0
+    for rid in remaining:  # 全ページ見ても存在しない = 非掲載（削除成功）
+        try:
+            api("/tasks/done", "POST", {"review_id": rid, "kind": "removed"}); removed += 1
+        except Exception:
+            pass
+    return removed
+
+
 def main():
     accts = accounts()
     if not accts: print("no accounts configured"); return
@@ -184,7 +221,10 @@ def main():
                     except Exception as e:
                         print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
                 rep_sent = send_reports_for(page, acct, errors)
-                print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件 / 違反報告{rep_sent}件")
+                removed = check_removals(page, acct, errors)
+                print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件 / 違反報告{rep_sent}件 / 削除確認{removed}件")
+                if removed:
+                    notify(f"[削除成功] {acct['name']}: 違反報告した口コミ{removed}件がホットペッパーから非掲載になりました。")
             except Exception as e:
                 traceback.print_exc(); errors.append(f"{acct['name']}: {str(e)[:200]}")
                 try: api("/recon", "POST", {"at": datetime.datetime.now().isoformat(), "error": f"{acct['name']}: {str(e)[:500]}",
