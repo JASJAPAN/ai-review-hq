@@ -1,5 +1,5 @@
 """SNS管制室（Instagram）Blueprint: app.register_blueprint(instagram_bp)
-- POST /admin/instagram/run      フィード投稿（Cron 月水金18:00 JST）
+- POST /admin/instagram/run      フィード投稿（Cron 毎日18:00 JST）
 - POST /admin/instagram/story    ストーリーズ投稿（Cron 毎日17:00 JST）
 - GET  /admin/instagram/preview  次の投稿を確認（管理画面ログイン）
 - GET/POST /admin/instagram/webhook  MetaからのDM・コメント受信 → 返信案生成 → 通知
@@ -15,7 +15,7 @@ import ig_config as C, ig_onedrive, ig_caption, ig_instagram
 
 instagram_bp = Blueprint("instagram", __name__, url_prefix="/admin/instagram")
 JST = timezone(timedelta(hours=9))
-DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
+DATA_DIR = Path(os.environ.get("DATA_DIR") or ("/var/data" if Path("/var/data").is_dir() else "."))   # 永続ディスク優先
 MEDIA_DIR = DATA_DIR / "ig_media"
 DB_PATH = DATA_DIR / "instagram.db"
 MENU = json.loads((Path(__file__).parent / "ig_menu.json").read_text(encoding="utf-8"))
@@ -35,17 +35,20 @@ def db():
                    media_id TEXT, dry_run INTEGER, created_at TEXT)""")
     con.execute("""CREATE TABLE IF NOT EXISTS ig_inbox(id TEXT PRIMARY KEY, kind TEXT, sender_id TEXT, sender_name TEXT,
                    text TEXT, reply TEXT, status TEXT, created_at TEXT, replied_at TEXT)""")
+    con.execute("CREATE TABLE IF NOT EXISTS ig_settings(key TEXT PRIMARY KEY, value TEXT)")
     return con
 
 # ---------- 写真ローテーション・画像準備 ----------
-def pick_photo(photos, today: date, kind):
-    start = date(2026, 9, 7)
-    if kind == "feed":
-        n = sum(1 for i in range((today - start).days + 1) if (start + timedelta(days=i)).weekday() in (0, 2, 4))
-    else:
-        n = (today - start).days + 1
-        photos = photos[::-1]   # ストーリーズはフィードと逆順にして同日重複を避ける
-    return photos[max(n - 1, 0) % len(photos)]
+def pick_photo(photos, kind, con):
+    """投稿ログを見て選ぶ。①新着フォルダの未投稿写真を古い順に優先 ②なければ一番長く使っていない写真。
+    曜日や開始日に依存しないので、毎日でも週3でもスケジュールを変えるだけで回る"""
+    last = {r["photo"]: r["t"] for r in con.execute(
+        "SELECT photo, MAX(created_at) t FROM ig_posts WHERE kind=? AND dry_run=0 GROUP BY photo", (kind,))}
+    fresh = [p for p in photos if p.get("new") and p["name"] not in last]
+    if fresh: return fresh[0]
+    pool = [p for p in photos if not p.get("new")] or photos
+    if kind == "story": pool = pool[::-1]   # ストーリーズはフィードと逆順にして同日重複を避ける
+    return min(pool, key=lambda p: last.get(p["name"], ""))   # 未投稿("")が最優先、次に最終投稿が古い順
 
 def prepare(raw, size):
     im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
@@ -66,27 +69,37 @@ def media(token):
     if not p.exists(): abort(404)
     return send_file(p, mimetype="image/jpeg")
 
-def _next(kind):
+def _next(kind, con):
     today = datetime.datetime.now(JST).date()
     photos = ig_onedrive.list_photos()
-    if not photos: raise RuntimeError("HP掲載中フォルダに画像がありません")
-    photo = pick_photo(photos, today, kind)
+    if not photos: raise RuntimeError("投稿用フォルダに画像がありません")
+    photo = pick_photo(photos, kind, con)
     meta = MENU.get(photo["name"], {"name": Path(photo["name"]).stem, "category": "料理"})
+    meta = {k: v for k, v in meta.items() if k != "price"}   # 価格はAIに渡さない（キャプションに金額を出さない）
     return today, photo, meta
 
 def _post(kind):
     if not _tok(): return "forbidden", 403
     if not C.configured(): return "not configured yet", 200
-    today, photo, meta = _next(kind)
     con = db()
-    if kind == "feed":
-        jpeg = prepare(ig_onedrive.download(photo["id"]), (1080, 1350)); text = ig_caption.feed(meta, today)
-    else:
-        jpeg = prepare(ig_onedrive.download(photo["id"]), (1080, 1920)); text = ig_caption.story(meta, today)
-    url = stage(jpeg)
-    media_id = ""
-    if not C.DRY_RUN:
-        media_id = ig_instagram.publish_image(url, text) if kind == "feed" else ig_instagram.publish_story(url)
+    today_s = datetime.datetime.now(JST).date().isoformat()
+    if not C.DRY_RUN and con.execute("SELECT 1 FROM ig_posts WHERE kind=? AND dry_run=0 AND created_at LIKE ?",
+                                     (kind, today_s + "%")).fetchone():
+        return jsonify({"kind": kind, "skipped": "本日分は投稿済み"})   # Cronの再実行などで二重投稿しない
+    try:
+        ig_instagram.ensure_token(con)
+        today, photo, meta = _next(kind, con)
+        if kind == "feed":
+            jpeg = prepare(ig_onedrive.download(photo["id"]), (1080, 1350)); text = ig_caption.feed(meta, today)
+        else:
+            jpeg = prepare(ig_onedrive.download(photo["id"]), (1080, 1920)); text = ig_caption.story(meta, today)
+        url = stage(jpeg)
+        media_id = ""
+        if not C.DRY_RUN:
+            media_id = ig_instagram.publish_image(url, text) if kind == "feed" else ig_instagram.publish_story(url)
+    except Exception as e:
+        ig_instagram.notify(f"[Instagram自動投稿 失敗] {kind} {today_s}\n{type(e).__name__}: {e}\n確認: {C.PUBLIC_BASE_URL}/admin/instagram/")
+        raise
     con.execute("INSERT INTO ig_posts(kind,photo,caption,media_id,dry_run,created_at) VALUES(?,?,?,?,?,?)",
                 (kind, photo["name"], text, media_id, int(C.DRY_RUN), datetime.datetime.now(JST).isoformat())); con.commit()
     return jsonify({"kind": kind, "photo": photo["name"], "dry_run": C.DRY_RUN, "media_id": media_id, "caption": text})
@@ -100,7 +113,7 @@ def story(): return _post("story")
 @instagram_bp.route("/preview")
 def preview():
     if not C.configured(): return "Instagram/OneDrive の環境変数が未設定です", 200
-    today, photo, meta = _next("feed")
+    today, photo, meta = _next("feed", db())
     return jsonify({"date": str(today), "photo": photo["name"], "caption": ig_caption.feed(meta, today)})
 
 # ---------- DM・コメント受信（Meta Webhook） ----------
@@ -137,6 +150,7 @@ def inbox_send(mid):
     con = db(); r = con.execute("SELECT * FROM ig_inbox WHERE id=?", (mid,)).fetchone()
     text = request.form["reply"].strip()
     if not C.DRY_RUN:
+        ig_instagram.ensure_token(con)
         (ig_instagram.send_dm(r["sender_id"], text) if r["kind"] == "dm" else ig_instagram.reply_comment(mid, text))
     con.execute("UPDATE ig_inbox SET reply=?, status='sent', replied_at=? WHERE id=?", (text, datetime.datetime.now(JST).isoformat(), mid)); con.commit()
     return redirect(url_for("instagram.index"))
