@@ -35,12 +35,14 @@ TPL = """
 .hp{border-left:6px solid #e60012}.gg{border-left:6px solid #4285f4}.rep{background:#fff3f3}.tag{font-size:12px;padding:2px 6px;border-radius:4px;background:#eee}</style>
 <h2>口コミ管制室</h2>
 <p><a href="{{url_for('google.index')}}">Google連携設定</a> ／ <a href="{{url_for('reviews.hp_settings')}}">ホットペッパー設定</a> ／ <a href="{{url_for('instagram.index')}}">SNS管制室</a></p>
-<p>判定待ち {{new_count}}件 ／ 承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件 ／ 違反報告:送信待ち {{rep_approved|length}}件・送信済み {{rep_done|length}}件</p>
+<p>判定待ち {{new_count}}件 ／ 承認待ち {{pending|length}}件 ／ 違反報告候補 {{reports|length}}件 ／ ホットペッパー返信待ち {{hp_todo|length}}件 ／ 違反報告:送信待ち {{rep_approved|length}}件・送信済み {{rep_done|length}}件・<b>削除成功 {{rep_removed|length}}件</b></p>
 <details><summary>違反報告の状況（送信待ち／送信済みの直近30件）</summary>
   <h3>送信待ち（承認済み・毎朝1店舗3件ずつ送信）</h3>
   {% for r in rep_approved %}<p>{{r.store}} ★{{r.rating}} {{r.created_at[:10]}}｜{{r.comment[:60]}}…</p>{% else %}<p>なし</p>{% endfor %}
   <h3>送信済み（ホットペッパー側で審査中。目処14営業日）</h3>
   {% for r in rep_done %}<p>{{r.store}} ★{{r.rating}} {{r.created_at[:10]}}｜{{r.comment[:60]}}…</p>{% else %}<p>なし</p>{% endfor %}
+  <h3>削除成功（報告が認められ、口コミ一覧から消えたもの）</h3>
+  {% for r in rep_removed %}<p style="color:#173F35"><b>{{r.store}}</b> ★{{r.rating}} {{r.created_at[:10]}}｜{{r.comment[:60]}}…</p>{% else %}<p>まだありません（審査は目安14営業日）</p>{% endfor %}
 </details>
 <form method="post" action="{{url_for('reviews.bulk_regenerate_pending')}}" style="display:inline"
       onsubmit="return confirm('承認待ちの返信 {{pending|length}}件を、新しいトーンでAIに作り直させます。作り直し後は自動確定されます。よろしいですか？')">
@@ -99,6 +101,7 @@ def index():
         pending=q("SELECT * FROM reviews WHERE reply_status='pending' ORDER BY created_at DESC"),
         rep_approved=q("SELECT * FROM reviews WHERE report=1 AND report_status='approved' ORDER BY created_at DESC LIMIT 30"),
         rep_done=q("SELECT * FROM reviews WHERE report=1 AND report_status='reported' ORDER BY created_at DESC LIMIT 30"),
+        rep_removed=q("SELECT * FROM reviews WHERE report=1 AND report_status='removed' ORDER BY created_at DESC LIMIT 50"),
         reports=q("SELECT * FROM reviews WHERE report=1 AND report_status='todo' ORDER BY created_at DESC"),
         hp_todo=q("SELECT * FROM reviews WHERE platform='hotpepper' AND reply_status='todo'"),
         posted=q("SELECT * FROM reviews WHERE reply_status='posted' ORDER BY posted_at DESC LIMIT 20"),
@@ -262,6 +265,7 @@ def tasks():
         "hotpepper_replies": rows("SELECT review_id,store,reviewer,rating,comment,review_url,reply FROM reviews WHERE platform='hotpepper' AND reply_status='todo'"),
         "reports": rows("SELECT review_id,platform,store,reviewer,rating,comment,review_url,policy_clause,report_reason FROM reviews WHERE report=1 AND report_status='approved'"),
         "reports_pending_count": rows("SELECT COUNT(*) n FROM reviews WHERE report=1 AND report_status='todo'")[0]["n"],
+        "reported": rows("SELECT review_id,store,reviewer,comment FROM reviews WHERE platform='hotpepper' AND report=1 AND report_status='reported'"),
     })
 
 @reviews_bp.route("/tasks/done", methods=["POST"])
@@ -272,6 +276,8 @@ def tasks_done():
     if d["kind"] == "reply":
         con.execute("UPDATE reviews SET reply_status='posted', posted_at=? WHERE review_id=?",
                     (datetime.datetime.now().isoformat(), d["review_id"]))
+    elif d["kind"] == "removed":
+        con.execute("UPDATE reviews SET report_status='removed' WHERE review_id=?", (d["review_id"],))
     else:
         con.execute("UPDATE reviews SET report_status='reported' WHERE review_id=?", (d["review_id"],))
     con.commit()
