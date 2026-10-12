@@ -188,6 +188,18 @@ def report_reject(review_id):
 
 
 # ---------- Cron / 拡張機能用 API ----------
+@reviews_bp.route("/stats")
+def stats():
+    """件数だけの診断用（本文は含まない）"""
+    con = db()
+    rs = {str(r[0]): r[1] for r in con.execute("SELECT reply_status, COUNT(*) FROM reviews GROUP BY reply_status")}
+    reps = {str(r[0]): r[1] for r in con.execute("SELECT report_status, COUNT(*) FROM reviews WHERE report=1 GROUP BY report_status")}
+    plats = {str(r[0]): r[1] for r in con.execute("SELECT platform, COUNT(*) FROM reviews GROUP BY platform")}
+    total = con.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
+    import json as _j
+    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+
+
 @reviews_bp.route("/run", methods=["POST"])
 def run():
     """Render Cron Job から15分おき。Google口コミの取得〜自動返信"""
@@ -196,12 +208,23 @@ def run():
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
         return f"google not configured; judged {judged}", 200
-    import reply_worker; reply_worker.main()
-    return f"ok; judged {judged}", 200
+    # Google同期はバックグラウンドで実行（API応答待ちでgunicornにワーカーを殺されないように）
+    if _google_lock.acquire(blocking=False):
+        def _g():
+            try:
+                import reply_worker; reply_worker.main()
+            except Exception as e:
+                print("google reply_worker error:", repr(e))
+            finally:
+                _google_lock.release()
+        threading.Thread(target=_g, daemon=True).start()
+        return f"ok; judged {judged}; google sync started", 200
+    return f"ok; judged {judged}; google sync already running", 200
 
 # ---------- 取り込み（即時保存）と判定（バックグラウンド）を分離 ----------
 import threading, time
 _judge_lock = threading.Lock()
+_google_lock = threading.Lock()
 
 def judge_pending(budget_sec=20, limit=50):
     """reply_status='new' の行を1件ずつ判定して pending/todo に進める。時間予算内で打ち切り。"""
