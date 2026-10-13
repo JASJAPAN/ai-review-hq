@@ -213,16 +213,23 @@ def main():
                 for i in items: i.pop("_hidden", None)
                 imported = api("/import", "POST", items).get("imported", 0) if items else 0
                 tasks = [t for t in api("/tasks").get("hotpepper_replies", []) if t["store"] == acct["name"]]
-                done = 0
+                done = 0; cleaned = 0
                 for tk in tasks:
                     try:
                         open_review_list(page); post_reply(page, tk)
                         api("/tasks/done", "POST", {"review_id": tk["review_id"], "kind": "reply"}); done += 1
                     except Exception as e:
-                        print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
+                        if "一覧に該当口コミが見つからない" in str(e):
+                            # 既に返信済みの旧ID重複など。キューから外して毎朝のエラーを止める
+                            try:
+                                api("/tasks/done", "POST", {"review_id": tk["review_id"], "kind": "reply_skipped"}); cleaned += 1
+                            except Exception:
+                                pass
+                        else:
+                            print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
                 rep_sent = send_reports_for(page, acct, errors)
                 removed = check_removals(page, acct, errors)
-                print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件 / 違反報告{rep_sent}件 / 削除確認{removed}件")
+                print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件 / 違反報告{rep_sent}件 / 削除確認{removed}件 / 整理{cleaned}件")
                 if removed:
                     notify(f"[削除成功] {acct['name']}: 違反報告した口コミ{removed}件がホットペッパーから非掲載になりました。")
             except Exception as e:
