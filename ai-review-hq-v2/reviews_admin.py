@@ -197,7 +197,10 @@ def stats():
     plats = {str(r[0]): r[1] for r in con.execute("SELECT platform, COUNT(*) FROM reviews GROUP BY platform")}
     total = con.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
     import json as _j
-    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+    byplat = {}
+    for p, st, c in con.execute("SELECT platform, report_status, COUNT(*) FROM reviews WHERE report=1 GROUP BY platform, report_status"):
+        byplat.setdefault(str(p), {})[str(st)] = c
+    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
 
 
 @reviews_bp.route("/run", methods=["POST"])
@@ -299,6 +302,8 @@ def tasks_done():
     if d["kind"] == "reply":
         con.execute("UPDATE reviews SET reply_status='posted', posted_at=? WHERE review_id=?",
                     (datetime.datetime.now().isoformat(), d["review_id"]))
+    elif d["kind"] == "reply_skipped":
+        con.execute("UPDATE reviews SET reply_status='skipped' WHERE review_id=?", (d["review_id"],))
     elif d["kind"] == "removed":
         con.execute("UPDATE reviews SET report_status='removed' WHERE review_id=?", (d["review_id"],))
     else:
