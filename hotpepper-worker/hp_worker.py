@@ -143,7 +143,7 @@ def send_reports_for(page, acct, errors):
             btn = el.locator("input.policyButton")
             if not btn.count():
                 api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
-                errors.append(f"{acct['name']} 違反報告: 既に再審査中/掲載不可のためスキップ（{rp['review_id']}）"); continue
+                print(f"{acct['name']} 違反報告: 既に再審査中/掲載不可のため完了扱い（{rp['review_id']}）"); continue
             btn.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
             if "/ccm030/" not in page.url:
                 errors.append(f"{acct['name']} 違反報告: フォームに遷移できず（{rp['review_id']}）"); continue
