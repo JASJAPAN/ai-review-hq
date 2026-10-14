@@ -7,7 +7,7 @@ import requests
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("KUCHIKOMI_BASE", "https://kuchikomi-hq.onrender.com").rstrip("/") + "/admin/replies"
-TOKEN = os.environ["REPLY_RUN_TOKEN"]
+TOKEN = os.environ.get("REPLY_RUN_TOKEN", "")
 MODE = os.environ.get("HP_MODE", "run")
 H = {"X-Run-Token": TOKEN, "Content-Type": "application/json"}
 LOGIN_URL = "https://www.cms.hotpepper.jp/CLN/login/"
@@ -210,6 +210,7 @@ def main():
                 if MODE == "recon": recon(page, acct); continue
                 open_review_list(page)
                 items = scrape(page, acct["name"])
+                print(f"{acct['name']} 一覧{page.locator(SEL_ITEM).count()}行 / 抽出{len(items)}件")
                 for i in items: i.pop("_hidden", None)
                 imported = api("/import", "POST", items).get("imported", 0) if items else 0
                 tasks = [t for t in api("/tasks").get("hotpepper_replies", []) if t["store"] == acct["name"]]
@@ -264,5 +265,39 @@ def main():
             notify(f"[Google] 承認済みの違反報告が{len(g_manual)}件あります。Googleは自動送信非対応のため、クチコミ管理ツールから手動報告してください。")
         if errors: notify("[ホットペッパー] " + " / ".join(errors)); sys.exit(1)
 
+def probe():
+    """調査モード: HP_PROBE_IDS="C000001|ラベル1;C000002|ラベル2" のIDに順にログインし、
+    口コミ一覧に何件見えるかをログに出す（APIトークン不要・DBには何も書かない）"""
+    pairs = [s.split("|", 1) for s in os.environ["HP_PROBE_IDS"].split(";") if s.strip()]
+    pw = os.environ["HP_PROBE_PW"]
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        for pid, label in pairs:
+            ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
+            try:
+                login(page, {"id": pid.strip(), "pw": pw})
+                page.goto(REVIEW_LIST_URL, wait_until="networkidle", timeout=60000)
+                all_rows = page.locator(SEL_ITEM).count()
+                body = page.inner_text("body")
+                m = re.search(r"全\s*([0-9,]+)\s*件", body)
+                total = m.group(1) if m else "?"
+                unrep = -1
+                if page.locator("a[href*='showReportListNoComment']").count():
+                    page.locator("a[href*='showReportListNoComment']").first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                    unrep = page.locator(SEL_ITEM).count()
+                first = ""
+                if page.locator(SEL_ITEM).count():
+                    d = page.locator(SEL_ITEM).first.locator("span[id^='contributionDate']")
+                    first = d.first.inner_text().strip() if d.count() else ""
+                print(f"[PROBE {label} {pid.strip()}] 一覧{all_rows}行(全{total}件表記) / 未返信{unrep}行 / 先頭日付:{first} / URL:{page.url[:90]}")
+            except Exception as e:
+                print(f"[PROBE {label} {pid.strip()}] 失敗: {str(e)[:150]}")
+            finally:
+                ctx.close()
+        browser.close()
+
 if __name__ == "__main__":
-    main()
+    if os.environ.get("HP_PROBE_IDS"):
+        probe()
+    else:
+        main()
