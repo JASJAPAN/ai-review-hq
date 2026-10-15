@@ -289,7 +289,9 @@ def probe():
                 if page.locator(SEL_ITEM).count():
                     d = page.locator(SEL_ITEM).first.locator("span[id^='contributionDate']")
                     first = d.first.inner_text().strip() if d.count() else ""
-                print(f"[PROBE {label} {pid.strip()}] 一覧{all_rows}行(全{total}件表記) / 未返信{unrep}行 / 先頭日付:{first} / URL:{page.url[:90]}")
+                its = scrape(page, label)
+                smp = " | ".join(f"★{i['rating']} {i['posted_at']} {i['reviewer'][:6]} 本文{len(i['comment'])}字 ext:{i['external_id'][:20]}" for i in its[:3])
+                print(f"[PROBE {label} {pid.strip()}] 一覧{all_rows}行(全{total}件表記) / 未返信{unrep}行 / 抽出{len(its)}件 / 先頭日付:{first} / 例: {smp}")
             except Exception as e:
                 print(f"[PROBE {label} {pid.strip()}] 失敗: {str(e)[:150]}")
             finally:
