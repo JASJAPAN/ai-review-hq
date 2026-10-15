@@ -93,6 +93,10 @@ def post_reply(page, task):
     page.click("input[type='button'][value='同意して投稿する']"); page.wait_for_load_state("networkidle", timeout=60000)
     confirm = page.locator("input[type='button'][onclick*='doRegist']")
     if confirm.count(): confirm.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+    # 投稿検証: 未返信一覧から消えたことを確認（消えていなければ投稿は反映されていない）
+    open_review_list(page)
+    if find_item(page, ext, task) is not None:
+        raise RuntimeError(f"投稿後も未返信一覧に残っている（投稿未反映 / 画面:{page.url[:80]}）")
 
 def recon(page, acct):
     shots = []
@@ -213,8 +217,16 @@ def main():
                 print(f"{acct['name']} 一覧{page.locator(SEL_ITEM).count()}行 / 抽出{len(items)}件")
                 for i in items: i.pop("_hidden", None)
                 imported = api("/import", "POST", items).get("imported", 0) if items else 0
+                # 自己修復: 未返信一覧に残っているのにDB上「投稿済み/整理済み」の口コミを再キュー
+                requeued = 0
+                if items:
+                    try:
+                        requeued = api("/tasks/requeue", "POST", {"review_ids": ["hp:" + i["external_id"] for i in items]}).get("requeued", 0)
+                        if requeued: print(f"{acct['name']} 再投稿キュー{requeued}件（投稿済み扱いだが未返信一覧に残存）")
+                    except Exception:
+                        pass
                 tasks = [t for t in api("/tasks").get("hotpepper_replies", []) if t["store"] == acct["name"]]
-                done = 0; cleaned = 0
+                done = 0; cleaned = 0; vfail = 0
                 for tk in tasks:
                     try:
                         open_review_list(page); post_reply(page, tk)
@@ -226,6 +238,11 @@ def main():
                                 api("/tasks/done", "POST", {"review_id": tk["review_id"], "kind": "reply_skipped"}); cleaned += 1
                             except Exception:
                                 pass
+                        elif "投稿未反映" in str(e):
+                            vfail += 1; print("reply failed:", tk["review_id"], e)
+                            if vfail == 1: errors.append(f"{acct['name']} 返信投稿が画面に反映されない: {str(e)[:150]}")
+                            if vfail >= 3:
+                                print(f"{acct['name']} 投稿未反映が{vfail}件連続のため、この店舗の残りをスキップ"); break
                         else:
                             print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
                 rep_sent = send_reports_for(page, acct, errors)

@@ -297,6 +297,22 @@ def tasks():
         "reported": rows("SELECT review_id,store,reviewer,comment FROM reviews WHERE platform='hotpepper' AND report=1 AND report_status='reported'"),
     })
 
+@reviews_bp.route("/tasks/requeue", methods=["POST"])
+def tasks_requeue():
+    """自己修復: ワーカーが「いま未返信一覧に見えている」口コミIDを送ってくる。
+    その中でDB上 posted/skipped になっているものは実際には返信が反映されていないので、再投稿キューに戻す。
+    body: {"review_ids": ["hp:...", ...]}"""
+    if not _auth(): return "forbidden", 403
+    ids = [str(r) for r in (request.get_json(force=True) or {}).get("review_ids", []) if str(r).startswith("hp:")][:100]
+    if not ids: return jsonify({"requeued": 0})
+    con = db()
+    ph = ",".join("?" * len(ids))
+    cur = con.execute(
+        f"UPDATE reviews SET reply_status=CASE WHEN reply!='' THEN 'todo' ELSE 'new' END "
+        f"WHERE platform='hotpepper' AND review_id IN ({ph}) AND reply_status IN ('posted','skipped')", ids)
+    con.commit()
+    return jsonify({"requeued": cur.rowcount})
+
 @reviews_bp.route("/tasks/done", methods=["POST"])
 def tasks_done():
     """拡張機能が完了報告。body: {"review_id":"...","kind":"reply"|"report"}"""
