@@ -91,12 +91,19 @@ def post_reply(page, task):
     el.locator("tr:first-child > td:nth-child(4) a").first.click(); page.wait_for_load_state("networkidle", timeout=60000)
     page.fill("textarea[name='commentText']", task["reply"])
     page.click("input[type='button'][value='同意して投稿する']"); page.wait_for_load_state("networkidle", timeout=60000)
-    confirm = page.locator("input[type='button'][onclick*='doRegist']")
-    if confirm.count(): confirm.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+    # 確認画面の最終確定ボタンは形が複数あるため広めに探す
+    for sel in ("input[type='button'][onclick*='doRegist']", "input[type='submit'][value*='投稿']",
+                "input[type='button'][value*='投稿する']", "input[type='submit'][value*='登録']"):
+        confirm = page.locator(sel)
+        if confirm.count():
+            confirm.first.click(); page.wait_for_load_state("networkidle", timeout=60000); break
+    diag_url = page.url
+    try: diag_txt = re.sub(r"\s+", " ", page.inner_text("body"))[:180]
+    except Exception: diag_txt = ""
     # 投稿検証: 未返信一覧から消えたことを確認（消えていなければ投稿は反映されていない）
     open_review_list(page)
     if find_item(page, ext, task) is not None:
-        raise RuntimeError(f"投稿後も未返信一覧に残っている（投稿未反映 / 画面:{page.url[:80]}）")
+        raise RuntimeError(f"投稿後も未返信一覧に残っている（投稿未反映 / 直後URL:{diag_url[:80]} / 文言:{diag_txt}）")
 
 def recon(page, acct):
     shots = []
@@ -209,6 +216,7 @@ def main():
         errors = []
         for acct in accts:
             ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
+            page.on("dialog", lambda d: d.accept())  # confirm()ダイアログは常に承認（既定のdismissだと投稿がキャンセルされる）
             try:
                 login(page, acct)
                 if MODE == "recon": recon(page, acct); continue
@@ -291,6 +299,7 @@ def probe():
         browser = p.chromium.launch(headless=True)
         for pid, label in pairs:
             ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
+            page.on("dialog", lambda d: d.accept())  # confirm()ダイアログは常に承認（既定のdismissだと投稿がキャンセルされる）
             try:
                 login(page, {"id": pid.strip(), "pw": pw})
                 page.goto(REVIEW_LIST_URL, wait_until="networkidle", timeout=60000)
