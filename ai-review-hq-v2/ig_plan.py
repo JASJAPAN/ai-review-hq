@@ -13,9 +13,14 @@ from pathlib import Path
 import requests
 from flask import jsonify, abort, request, render_template_string, Response
 import ig_config as C, ig_instagram
-from instagram_admin import instagram_bp, db, prepare, stage, _tok, JST
+from instagram_admin import instagram_bp, db, prepare, stage, JST
 
 PLAN_DIR = Path(__file__).parent / "ig_plans"
+
+
+def _run_ok():
+    t = request.headers.get("X-Run-Token")
+    return bool(t) and t in (os.environ.get("REPLY_RUN_TOKEN"), os.environ.get("PLAN_RUN_TOKEN"))
 
 
 def load_plan(account):
@@ -61,7 +66,7 @@ def fetch_image(url):
 
 @instagram_bp.route("/plan/<account>/run", methods=["POST"])
 def plan_run(account):
-    if not _tok(): return "forbidden", 403
+    if not _run_ok(): return "forbidden", 403
     plan, cr = load_plan(account), creds(account)
     if not (cr["user_id"] and cr["token"]): return f"{account}: IG_USER_ID / IG_ACCESS_TOKEN 未設定", 200
     con = db(); _ensure_cols(con)
