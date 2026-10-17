@@ -31,6 +31,7 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 from reviews_admin import reviews_bp  # 口コミ管制室（Google/ホットペッパー返信・違反報告）
 app.register_blueprint(reviews_bp)
 from instagram_admin import instagram_bp  # SNS管制室（Instagram投稿・DM/コメント）
+import ig_plan  # noqa: F401  店舗ごとの投稿カレンダー（/admin/instagram/plan/<account>/）。登録前にルートを追加する
 app.register_blueprint(instagram_bp)
 from google_admin import google_bp  # Google連携（OAuth接続・店舗選択）
 app.register_blueprint(google_bp)

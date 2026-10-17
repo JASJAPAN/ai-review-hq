@@ -26,6 +26,7 @@ def _tok(): return request.headers.get("X-Run-Token") == os.environ.get("REPLY_R
 @instagram_bp.before_request
 def _guard():
     if request.path.startswith(OPEN): return None
+    if request.path.startswith("/admin/instagram/plan/") and request.path.endswith("/run"): return None   # Cron用（X-Run-Tokenで認証）
     if not session.get("admin"): return redirect(url_for("login", next=request.path))
 
 def db():
@@ -36,6 +37,8 @@ def db():
     con.execute("""CREATE TABLE IF NOT EXISTS ig_inbox(id TEXT PRIMARY KEY, kind TEXT, sender_id TEXT, sender_name TEXT,
                    text TEXT, reply TEXT, status TEXT, created_at TEXT, replied_at TEXT)""")
     con.execute("CREATE TABLE IF NOT EXISTS ig_settings(key TEXT PRIMARY KEY, value TEXT)")
+    if "account" not in [r[1] for r in con.execute("PRAGMA table_info(ig_posts)")]:   # 複数アカウント対応（既定アカウントは ''）
+        con.execute("ALTER TABLE ig_posts ADD COLUMN account TEXT DEFAULT ''"); con.commit()
     return con
 
 # ---------- 写真ローテーション・画像準備 ----------
@@ -43,7 +46,7 @@ def pick_photo(photos, kind, con):
     """投稿ログを見て選ぶ。①新着フォルダの未投稿写真を古い順に優先 ②なければ一番長く使っていない写真。
     曜日や開始日に依存しないので、毎日でも週3でもスケジュールを変えるだけで回る"""
     last = {r["photo"]: r["t"] for r in con.execute(
-        "SELECT photo, MAX(created_at) t FROM ig_posts WHERE kind=? AND dry_run=0 GROUP BY photo", (kind,))}
+        "SELECT photo, MAX(created_at) t FROM ig_posts WHERE kind=? AND dry_run=0 AND COALESCE(account,'')='' GROUP BY photo", (kind,))}
     fresh = [p for p in photos if p.get("new") and p["name"] not in last]
     if fresh: return fresh[0]
     pool = [p for p in photos if not p.get("new")] or photos
@@ -83,7 +86,7 @@ def _post(kind):
     if not C.configured(): return "not configured yet", 200
     con = db()
     today_s = datetime.datetime.now(JST).date().isoformat()
-    if not C.DRY_RUN and con.execute("SELECT 1 FROM ig_posts WHERE kind=? AND dry_run=0 AND created_at LIKE ?",
+    if not C.DRY_RUN and con.execute("SELECT 1 FROM ig_posts WHERE kind=? AND dry_run=0 AND COALESCE(account,'')='' AND created_at LIKE ?",
                                      (kind, today_s + "%")).fetchone():
         return jsonify({"kind": kind, "skipped": "本日分は投稿済み"})   # Cronの再実行などで二重投稿しない
     try:
