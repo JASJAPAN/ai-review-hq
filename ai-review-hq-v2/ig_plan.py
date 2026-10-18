@@ -101,6 +101,25 @@ def plan_preview(account):
     return jsonify({"day": p["day"], "title": p["title"], "caption": caption_of(plan, p), "dry_run": creds(account)["dry_run"]})
 
 
+@instagram_bp.route("/plan/<account>/image/<int:day>.jpg")
+def plan_image(account, day):
+    """予約投稿ツールに渡すための加工済み画像（元はHot Pepper等の公開写真）。CORS許可"""
+    plan = load_plan(account)
+    p = next((x for x in plan["posts"] if x["day"] == day), None)
+    if not p: abort(404)
+    r = Response(prepare(fetch_image(p["image"]), tuple(plan.get("image_size", (1080, 1080)))), mimetype="image/jpeg")
+    r.headers["Access-Control-Allow-Origin"] = "*"; r.headers["Cache-Control"] = "public, max-age=86400"
+    return r
+
+
+@instagram_bp.route("/plan/<account>/posts.json")
+def plan_json(account):
+    plan = load_plan(account)
+    r = jsonify([{"day": p["day"], "title": p["title"], "caption": caption_of(plan, p)} for p in plan["posts"]])
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    return r
+
+
 TPL = """<meta name=viewport content="width=device-width,initial-scale=1">
 <style>body{font-family:sans-serif;max-width:960px;margin:auto;padding:12px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
 .c{border:1px solid #ddd;border-radius:8px;overflow:hidden}.c img{width:100%;aspect-ratio:1;object-fit:cover}.c div{padding:8px;font-size:13px;white-space:pre-wrap}
