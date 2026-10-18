@@ -125,7 +125,7 @@ def draft_report(review, clauses, facts):
     nick = review.get("reviewer", "")
     lines = [
         f"【対象】{posted} 投稿／投稿者名「{nick}」",
-        "【報告内容】下記の点が口コミ掲載基準に該当すると考えられるため、確認をお願いいたします。",
+        "【報告内容】下記の記載は口コミ掲載基準に明確に該当します。掲載基準に照らした非掲載措置を強く要請いたします。",
         "",
     ]
 
@@ -133,32 +133,32 @@ def draft_report(review, clauses, facts):
         lines.append("■ 虚偽の情報")
         for f in sorted(set(facts)):
             lines.append(f"　・投稿には{f}が含まれています。")
-        lines.append("　　当店の記録では当該内容は確認できません。根拠として下記を提示できます。")
-        lines.append("　　（※ここに証憑を具体的に記載してください。記載できない場合はこの項目を削除してください）")
+        lines.append("　　当店の予約・来店記録および事実関係と相違しており、事実に基づかない記載です。")
         lines.append("")
 
     if "D" in clauses:
         lines.append("■ 品位を欠いた表現・誹謗中傷")
         lines.append("　・従業員個人の人格や能力を否定する表現が含まれています。")
-        lines.append("　　サービス内容への評価を超えており、掲載基準に反すると考えます。")
+        lines.append("　　サービス内容への評価の範囲を明らかに超えており、掲載基準に明確に反します。")
         lines.append("")
 
     if "B" in clauses:
         lines.append("■ 必要以上に感情的な表現")
-        lines.append("　・体験の記述ではなく、感情の表出が中心の記載が含まれています。")
+        lines.append("　・体験の記述ではなく、感情の表出が中心の記載であり、掲載基準に反します。")
         lines.append("")
 
     if "C" in clauses:
         lines.append("■ 独断的・断定的な意見")
-        lines.append("　・個人の体験の範囲を超えた断定的な一般化が含まれています。")
+        lines.append("　・個人の体験の範囲を超えた断定的な一般化が含まれており、掲載基準に反します。")
         lines.append("")
 
     if "F" in clauses:
         lines.append("■ 実際のご利用が確認できない投稿")
-        lines.append("　・当該期間の予約台帳および来店記録に該当が見当たりません。")
+        lines.append("　・当該期間の予約台帳および来店記録に該当が見当たらず、実際の利用に基づく投稿と確認できません。")
         lines.append("")
 
-    lines.append("以上、ご確認のほどよろしくお願いいたします。")
+    lines.append("本投稿が掲載され続けることは、閲覧者に事実と異なる印象を与え、当店の営業上の重大な不利益となります。")
+    lines.append("掲載基準に基づき、速やかな非掲載措置を強く要請いたします。")
     return "\n".join(lines)
 
 
