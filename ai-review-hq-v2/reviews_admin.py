@@ -253,7 +253,7 @@ def judge_pending(budget_sec=20, limit=50):
                           external_id=r["review_id"].replace("hp:", "", 1), posted_at="")
                 reason = j.get("report_reason", "")
                 if j.get("evidence_needed"): reason += "\n\n【店側で用意する証憑】" + "／".join(j["evidence_needed"])
-                auto = r["rating"] >= int(os.environ.get("AUTO_POST_MIN_RATING", "6")) and not j["report"]
+                auto = r["rating"] >= int(os.environ.get("AUTO_POST_MIN_RATING", "6"))  # 違反報告対象でも返信は全自動投稿
                 status = ("todo" if r["platform"] == "hotpepper" else "auto") if auto else "pending"
                 con.execute("""UPDATE reviews SET reply=?, reply_status=?, report=?, policy_clause=?, report_reason=?, report_status=?
                                WHERE review_id=?""", (j["reply"], status, int(j["report"]), j.get("policy_clause", ""), reason,
@@ -332,6 +332,16 @@ def tasks():
         "reports_pending_count": rows("SELECT COUNT(*) n FROM reviews WHERE report=1 AND report_status='todo'")[0]["n"],
         "reported": rows("SELECT review_id,store,reviewer,comment FROM reviews WHERE platform='hotpepper' AND report=1 AND report_status='reported'"),
     })
+
+@reviews_bp.route("/tasks/flush_pending", methods=["POST"])
+def tasks_flush_pending():
+    """承認待ちで止まっている生成済み返信を自動投稿キューへ流す（判定失敗のものは除く）"""
+    if not _auth(): return "forbidden", 403
+    con = db()
+    cur = con.execute("""UPDATE reviews SET reply_status = CASE WHEN platform='hotpepper' THEN 'todo' ELSE 'auto' END
+                         WHERE reply_status='pending' AND reply != '' AND reply NOT LIKE '(判定失敗%'""")
+    con.commit()
+    return jsonify({"flushed": cur.rowcount})
 
 @reviews_bp.route("/tasks/requeue", methods=["POST"])
 def tasks_requeue():

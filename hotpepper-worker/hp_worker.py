@@ -211,6 +211,11 @@ def check_removals(page, acct, errors):
 def main():
     accts = accounts()
     if not accts: print("no accounts configured"); return
+    try:
+        fl = api("/tasks/flush_pending", "POST", {}).get("flushed", 0)
+        if fl: print(f"承認待ちの返信{fl}件を自動投稿キューへ移動")
+    except Exception:
+        pass
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         errors = []
