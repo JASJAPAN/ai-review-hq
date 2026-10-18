@@ -217,6 +217,8 @@ def run():
     """Render Cron Job から15分おき。Google口コミの取得〜自動返信"""
     if not _auth(): return "forbidden", 403
     judged = judge_pending(budget_sec=15)
+    # ★2以下の既存口コミを積極基準で報告判定し直す（バックグラウンド・返信には触れない）
+    threading.Thread(target=rejudge_reports, kwargs={"budget_sec": 60, "limit": 40}, daemon=True).start()
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
         return f"google not configured; judged {judged}", 200
@@ -263,6 +265,34 @@ def judge_pending(budget_sec=20, limit=50):
                 con.execute("UPDATE reviews SET reply=?, reply_status=? WHERE review_id=?",
                             (f"(判定失敗: {str(e)[:100]})", "pending" if again else "new", r["review_id"])); con.commit()
                 if not again: time.sleep(2)
+        return n
+    finally:
+        _judge_lock.release()
+
+def rejudge_reports(budget_sec=60, limit=40):
+    """★2以下で未報告(report=0相当)のホットペッパー口コミを、積極基準で報告判定だけやり直す。
+    返信(reply/reply_status)には一切触れない。再判定して根拠が組めなかったものは report=-1 を付けて二度と対象にしない。"""
+    if not _judge_lock.acquire(blocking=False): return 0
+    try:
+        con = db(); t0 = time.time(); n = 0
+        rows = con.execute("""SELECT * FROM reviews WHERE platform='hotpepper' AND rating<=2
+                              AND (report IS NULL OR report=0) AND reply_status!='new'
+                              ORDER BY created_at DESC LIMIT ?""", (limit,)).fetchall()
+        for r in rows:
+            if time.time() - t0 > budget_sec: break
+            try:
+                j = judge(r["platform"], r["store"], r["rating"], r["comment"] or "", r["reviewer"] or "",
+                          external_id=r["review_id"].replace("hp:", "", 1), posted_at="")
+                if j.get("report"):
+                    st = "approved" if os.environ.get("REPORT_AUTO_APPROVE") == "1" else "todo"
+                    con.execute("UPDATE reviews SET report=1, policy_clause=?, report_reason=?, report_status=? WHERE review_id=?",
+                                (j.get("policy_clause", ""), j.get("report_reason", ""), st, r["review_id"]))
+                else:
+                    con.execute("UPDATE reviews SET report=-1 WHERE review_id=?", (r["review_id"],))
+                con.commit(); n += 1
+            except Exception as e:
+                print("rejudge error:", r["review_id"], repr(e)); time.sleep(2)
+        if n: print(f"rejudge_reports: {n}件を再判定")
         return n
     finally:
         _judge_lock.release()
