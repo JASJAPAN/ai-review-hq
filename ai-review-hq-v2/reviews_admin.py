@@ -218,7 +218,7 @@ def run():
     if not _auth(): return "forbidden", 403
     judged = judge_pending(budget_sec=15)
     # ★2以下の既存口コミを積極基準で報告判定し直す（バックグラウンド・返信には触れない）
-    threading.Thread(target=rejudge_reports, kwargs={"budget_sec": 60, "limit": 40}, daemon=True).start()
+    threading.Thread(target=rejudge_reports, kwargs={"budget_sec": 240, "limit": 40}, daemon=True).start()
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
         return f"google not configured; judged {judged}", 200
@@ -277,7 +277,7 @@ def rejudge_reports(budget_sec=60, limit=40):
         con = db(); t0 = time.time(); n = 0
         rows = con.execute("""SELECT * FROM reviews WHERE platform='hotpepper' AND rating<=2
                               AND (report IS NULL OR report=0) AND reply_status!='new'
-                              ORDER BY created_at DESC LIMIT ?""", (limit,)).fetchall()
+                              ORDER BY (CASE WHEN store LIKE 'いずみ%' THEN 0 ELSE 1 END), created_at DESC LIMIT ?""", (limit,)).fetchall()
         for r in rows:
             if time.time() - t0 > budget_sec: break
             try:
