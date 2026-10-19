@@ -100,10 +100,14 @@ def post_reply(page, task):
     diag_url = page.url
     try: diag_txt = re.sub(r"\s+", " ", page.inner_text("body"))[:180]
     except Exception: diag_txt = ""
+    try:
+        diag_btns = " | ".join(filter(None, [((b.get_attribute("value") or b.inner_text() or "").strip())[:20]
+                                             for b in page.locator("input[type='button'],input[type='submit'],button").all()[:10]]))
+    except Exception: diag_btns = ""
     # 投稿検証: 未返信一覧から消えたことを確認（消えていなければ投稿は反映されていない）
     open_review_list(page)
     if find_item(page, ext, task) is not None:
-        raise RuntimeError(f"投稿後も未返信一覧に残っている（投稿未反映 / 直後URL:{diag_url[:80]} / 文言:{diag_txt}）")
+        raise RuntimeError(f"投稿後も未返信一覧に残っている（投稿未反映 / 直後URL:{diag_url[:80]} / ボタン:{diag_btns} / 文言:{diag_txt[:100]}）")
 
 def recon(page, acct):
     shots = []
