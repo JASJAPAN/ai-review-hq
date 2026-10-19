@@ -34,6 +34,7 @@ def list_folder(drive_id, folder_id):
     items = []
     while url:
         d = requests.get(url, headers=h, timeout=60).json()
+        if "error" in d: raise RuntimeError(f"OneDrive一覧の取得に失敗: {d['error']}")
         items += [{"id": i["id"], "name": i["name"], "folder": "folder" in i} for i in d.get("value", [])
                   if "folder" in i or i["name"].lower().endswith(IMAGE_EXT)]
         url = d.get("@odata.nextLink")

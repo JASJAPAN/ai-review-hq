@@ -149,7 +149,8 @@ def plan_sheet():
     """OneDriveフォルダの写真を一覧表示（素材選び用。?t=PLAN_RUN_TOKEN&drive=&folder=）"""
     if not _tok_q(): abort(403)
     drive, folder, t = request.args["drive"], request.args["folder"], request.args["t"]
-    items = ig_onedrive.list_folder(drive, folder)
+    try: items = ig_onedrive.list_folder(drive, folder)
+    except Exception as e: return f"<pre>{e}</pre>", 500
     return render_template_string("""<meta name=viewport content="width=device-width,initial-scale=1">
 <style>body{font-family:sans-serif;margin:8px}.g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.g div{font-size:11px;word-break:break-all}.g img{width:100%;aspect-ratio:1;object-fit:cover}</style>
 {% for i in items if i.folder %}<p><a href="?t={{t}}&drive={{drive}}&folder={{i.id}}">📁 {{i.name}}</a></p>{% endfor %}
