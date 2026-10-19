@@ -121,7 +121,9 @@ def plan_upload(account, day):
     if not _tok_q(): return _cors(Response("forbidden", 403))
     load_plan(account)
     d = UPLOAD_DIR / account; d.mkdir(parents=True, exist_ok=True)
-    data = request.get_data()
+    n = request.content_length or 0
+    if n > 8 * 1024 * 1024: return _cors(Response("too large", 413))
+    data = request.environ["wsgi.input"].read(n)   # アプリ全体の64KB上限を避けて、この受け口だけ8MBまで受ける
     if len(data) < 1000 or data[:2] != b"\xff\xd8": return _cors(Response("not a jpeg", 400))
     (d / f"{day}.jpg").write_bytes(data)
     return _cors(jsonify({"ok": True, "day": day, "bytes": len(data)}))
