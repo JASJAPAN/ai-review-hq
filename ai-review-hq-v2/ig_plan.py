@@ -188,6 +188,34 @@ def plan_sheet():
         items=items, drive=drive, t=t)
 
 
+KIT = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>@{{plan.account}} 投稿キット</title>
+<style>body{font-family:-apple-system,sans-serif;max-width:900px;margin:auto;padding:16px;color:#222}
+.p{display:grid;grid-template-columns:220px 1fr;gap:14px;border-top:1px solid #ddd;padding:14px 0}
+.p img{width:220px;height:auto;border-radius:6px}textarea{width:100%;height:210px;font-size:13px}
+button,a.b{display:inline-block;margin:4px 6px 0 0;padding:6px 10px;border:1px solid #888;border-radius:6px;background:#f6f6f6;color:#222;text-decoration:none;font-size:13px;cursor:pointer}
+@media(max-width:600px){.p{grid-template-columns:1fr}.p img{width:100%}}</style>
+<h1>@{{plan.account}} 30日 投稿キット</h1>
+<p>各日の「画像を保存」で写真を保存し、「キャプションをコピー」で本文をコピーして投稿・予約してください。予約時刻：毎日 {{time}}（日本時間）</p>
+{% for p in posts %}<div class=p id="d{{p.day}}"><div><img src="image/{{p.day}}.jpg" alt="{{p.title}}">
+<a class=b href="image/{{p.day}}.jpg" download="higo_day{{'%02d'|format(p.day)}}.jpg">画像を保存</a></div>
+<div><b>{{p.day}}日目　{{p.date}}　{{time}}</b>　{{p.title}}<br><textarea id="c{{p.day}}" readonly>{{p.caption}}</textarea>
+<button onclick="navigator.clipboard.writeText(document.getElementById('c{{p.day}}').value).then(()=>this.textContent='コピーしました')">キャプションをコピー</button></div></div>{% endfor %}"""
+
+
+@instagram_bp.route("/plan/<account>/kit")
+def plan_kit(account):
+    """手動・Chrome拡張での予約投稿用キット（画像＋キャプション＋予約日）。?start=YYYY-MM-DD&time=17:30"""
+    plan = load_plan(account)
+    try: start = datetime.date.fromisoformat(request.args.get("start", ""))
+    except ValueError: start = datetime.datetime.now(JST).date() + datetime.timedelta(days=1)
+    wd = "月火水木金土日"
+    posts = [{**p, "caption": caption_of(plan, p),
+              "date": (lambda d: f"{d.month}/{d.day}({wd[d.weekday()]})")(start + datetime.timedelta(days=p["day"] - 1))}
+             for p in plan["posts"]]
+    return render_template_string(KIT, plan=plan, posts=posts, time=request.args.get("time", "17:30"))
+
+
 TPL = """<meta name=viewport content="width=device-width,initial-scale=1">
 <style>body{font-family:sans-serif;max-width:960px;margin:auto;padding:12px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
 .c{border:1px solid #ddd;border-radius:8px;overflow:hidden}.c img{width:100%;aspect-ratio:1;object-fit:cover}.c div{padding:8px;font-size:13px;white-space:pre-wrap}
