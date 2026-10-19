@@ -104,15 +104,43 @@ def plan_preview(account):
     return jsonify({"day": p["day"], "title": p["title"], "caption": caption_of(plan, p), "dry_run": creds(account)["dry_run"]})
 
 
-@instagram_bp.route("/plan/<account>/image/<int:day>.jpg")
-def plan_image(account, day):
-    """予約投稿ツールに渡すための加工済み画像（元はHot Pepper等の公開写真）。CORS許可"""
-    plan = load_plan(account)
-    p = next((x for x in plan["posts"] if x["day"] == day), None)
-    if not p: abort(404)
-    r = Response(prepare(fetch_image(p["image"]), tuple(plan.get("image_size", (1080, 1080)))), mimetype="image/jpeg")
-    r.headers["Access-Control-Allow-Origin"] = "*"; r.headers["Cache-Control"] = "public, max-age=86400"
+UPLOAD_DIR = Path(os.environ.get("DATA_DIR") or ("/var/data" if Path("/var/data").is_dir() else ".")) / "ig_plan_imgs"
+
+
+def _cors(r):
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    r.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return r
+
+
+@instagram_bp.route("/plan/<account>/upload/<int:day>.jpg", methods=["POST", "OPTIONS"])
+def plan_upload(account, day):
+    """ブラウザで加工した投稿画像を受け取る（?t=PLAN_RUN_TOKEN）。OneDriveの写真をサーバーが直接読めないため"""
+    if request.method == "OPTIONS": return _cors(Response(""))
+    if not _tok_q(): return _cors(Response("forbidden", 403))
+    load_plan(account)
+    d = UPLOAD_DIR / account; d.mkdir(parents=True, exist_ok=True)
+    data = request.get_data()
+    if len(data) < 1000 or data[:2] != b"\xff\xd8": return _cors(Response("not a jpeg", 400))
+    (d / f"{day}.jpg").write_bytes(data)
+    return _cors(jsonify({"ok": True, "day": day, "bytes": len(data)}))
+
+
+@instagram_bp.route("/plan/<account>/image/<int:day>.jpg", methods=["GET", "OPTIONS"])
+def plan_image(account, day):
+    """予約投稿ツールに渡すための加工済み画像。アップロード済みならそれを、なければ計画の画像URLから作る。CORS許可"""
+    if request.method == "OPTIONS": return _cors(Response(""))
+    plan = load_plan(account)
+    up = UPLOAD_DIR / account / f"{day}.jpg"
+    if up.exists():
+        r = Response(up.read_bytes(), mimetype="image/jpeg")
+        r.headers["Cache-Control"] = "no-store"; return _cors(r)
+    p = next((x for x in plan["posts"] if x["day"] == day), None)
+    if not p or not p.get("image", "").startswith("http"): abort(404)
+    r = Response(prepare(fetch_image(p["image"]), tuple(plan.get("image_size", (1080, 1080)))), mimetype="image/jpeg")
+    r.headers["Cache-Control"] = "no-store"
+    return _cors(r)
 
 
 @instagram_bp.route("/plan/<account>/posts.json")
@@ -164,7 +192,7 @@ TPL = """<meta name=viewport content="width=device-width,initial-scale=1">
 .done{opacity:.45}.tag{font-size:11px;background:#eee;padding:1px 6px;border-radius:4px}</style>
 <h2>@{{plan.account}} 投稿カレンダー（{{plan.posts|length}}日）</h2>
 <p>コンセプト：{{plan.concept}} ／ 投稿済み {{done|length}} 本 ／ 本番投稿: {{'OFF（試運転）' if dry else 'ON'}}</p>
-<div class=g>{% for p in plan.posts %}<div class="c {{'done' if p.day in done}}"><img src="{{p.image}}" loading=lazy>
+<div class=g>{% for p in plan.posts %}<div class="c {{'done' if p.day in done}}"><img src="image/{{p.day}}.jpg" loading=lazy>
 <div><b>{{p.day}}日目</b> <span class=tag>{{p.theme}}</span> {{p.title}}{{' ✓投稿済み' if p.day in done}}
 
 {{p.caption}}</div></div>{% endfor %}</div>"""
