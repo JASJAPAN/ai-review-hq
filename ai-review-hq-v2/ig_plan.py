@@ -12,7 +12,7 @@ import io, os, json, datetime
 from pathlib import Path
 import requests
 from flask import jsonify, abort, request, render_template_string, Response
-import ig_config as C, ig_instagram
+import ig_config as C, ig_instagram, ig_onedrive
 from instagram_admin import instagram_bp, db, prepare, stage, JST
 
 PLAN_DIR = Path(__file__).parent / "ig_plans"
@@ -60,6 +60,9 @@ def caption_of(plan, p):
 
 
 def fetch_image(url):
+    if url.startswith("onedrive:"):   # onedrive:<driveId>/<itemId>
+        drive, item = url[len("onedrive:"):].rsplit("/", 1)
+        return ig_onedrive.download(item, drive)
     r = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
     r.raise_for_status(); return r.content
 
@@ -118,6 +121,40 @@ def plan_json(account):
     r = jsonify([{"day": p["day"], "title": p["title"], "caption": caption_of(plan, p)} for p in plan["posts"]])
     r.headers["Access-Control-Allow-Origin"] = "*"
     return r
+
+
+def _tok_q():
+    t = request.args.get("t")
+    return bool(t) and t == os.environ.get("PLAN_RUN_TOKEN")
+
+
+THUMB_DIR = Path(os.environ.get("DATA_DIR") or ("/var/data" if Path("/var/data").is_dir() else ".")) / "ig_thumbs"
+
+
+@instagram_bp.route("/plan/_thumb")
+def plan_thumb():
+    if not _tok_q(): abort(403)
+    drive, item = request.args["drive"], request.args["item"]
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    p = THUMB_DIR / f"{item}.jpg"
+    if not p.exists():
+        from PIL import Image, ImageOps
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(ig_onedrive.download(item, drive)))).convert("RGB")
+        im.thumbnail((420, 420)); im.save(p, "JPEG", quality=80)
+    return Response(p.read_bytes(), mimetype="image/jpeg")
+
+
+@instagram_bp.route("/plan/_sheet")
+def plan_sheet():
+    """OneDriveフォルダの写真を一覧表示（素材選び用。?t=PLAN_RUN_TOKEN&drive=&folder=）"""
+    if not _tok_q(): abort(403)
+    drive, folder, t = request.args["drive"], request.args["folder"], request.args["t"]
+    items = ig_onedrive.list_folder(drive, folder)
+    return render_template_string("""<meta name=viewport content="width=device-width,initial-scale=1">
+<style>body{font-family:sans-serif;margin:8px}.g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.g div{font-size:11px;word-break:break-all}.g img{width:100%;aspect-ratio:1;object-fit:cover}</style>
+{% for i in items if i.folder %}<p><a href="?t={{t}}&drive={{drive}}&folder={{i.id}}">📁 {{i.name}}</a></p>{% endfor %}
+<div class=g>{% for i in items if not i.folder %}<div><img loading=lazy src="_thumb?t={{t}}&drive={{drive}}&item={{i.id}}">{{loop.index}}. {{i.name}}<br><small>{{i.id}}</small></div>{% endfor %}</div>""",
+        items=items, drive=drive, t=t)
 
 
 TPL = """<meta name=viewport content="width=device-width,initial-scale=1">

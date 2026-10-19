@@ -26,7 +26,7 @@ def _tok(): return request.headers.get("X-Run-Token") == os.environ.get("REPLY_R
 @instagram_bp.before_request
 def _guard():
     if request.path.startswith(OPEN): return None
-    if request.path.startswith("/admin/instagram/plan/") and (request.path.endswith(("/run", ".jpg", "/posts.json"))): return None   # Cron用（X-Run-Tokenで認証）
+    if request.path.startswith("/admin/instagram/plan/") and (request.path.endswith(("/run", ".jpg", "/posts.json", "/_sheet", "/_thumb"))): return None   # Cron用（X-Run-Tokenで認証）
     if not session.get("admin"): return redirect(url_for("login", next=request.path))
 
 def db():

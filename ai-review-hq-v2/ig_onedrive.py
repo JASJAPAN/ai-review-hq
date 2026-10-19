@@ -27,7 +27,19 @@ def list_photos():
         photos += [{**p, "new": True} for p in sorted(_list_folder(C.ONEDRIVE_NEW_FOLDER_ID, h), key=lambda x: x["created"])]
     return photos
 
-def download(item_id):
-    r = requests.get(f"{GRAPH}/drives/{C.ONEDRIVE_DRIVE_ID}/items/{item_id}/content",
+def list_folder(drive_id, folder_id):
+    """任意のドライブ・フォルダの画像一覧（投稿カレンダーの素材選び用）"""
+    h = {"Authorization": f"Bearer {_token()}"}
+    url = f"{GRAPH}/drives/{drive_id}/items/{folder_id}/children?$select=id,name,file,folder&$top=200"
+    items = []
+    while url:
+        d = requests.get(url, headers=h, timeout=60).json()
+        items += [{"id": i["id"], "name": i["name"], "folder": "folder" in i} for i in d.get("value", [])
+                  if "folder" in i or i["name"].lower().endswith(IMAGE_EXT)]
+        url = d.get("@odata.nextLink")
+    return sorted(items, key=lambda x: (not x["folder"], x["name"]))
+
+def download(item_id, drive_id=None):
+    r = requests.get(f"{GRAPH}/drives/{drive_id or C.ONEDRIVE_DRIVE_ID}/items/{item_id}/content",
                      headers={"Authorization": f"Bearer {_token()}"}, allow_redirects=True, timeout=120)
     r.raise_for_status(); return r.content
