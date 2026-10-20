@@ -361,6 +361,13 @@ def tasks_requeue():
     con.commit()
     return jsonify({"requeued": cur.rowcount})
 
+def _ensure_report_ts(con):
+    """reported_at / removed_at 列が無ければ追加（初回のみ）"""
+    try: con.execute("ALTER TABLE reviews ADD COLUMN reported_at TEXT")
+    except Exception: pass
+    try: con.execute("ALTER TABLE reviews ADD COLUMN removed_at TEXT")
+    except Exception: pass
+
 @reviews_bp.route("/tasks/done", methods=["POST"])
 def tasks_done():
     """拡張機能が完了報告。body: {"review_id":"...","kind":"reply"|"report"}"""
@@ -372,9 +379,13 @@ def tasks_done():
     elif d["kind"] == "reply_skipped":
         con.execute("UPDATE reviews SET reply_status='skipped' WHERE review_id=?", (d["review_id"],))
     elif d["kind"] == "removed":
-        con.execute("UPDATE reviews SET report_status='removed' WHERE review_id=?", (d["review_id"],))
+        _ensure_report_ts(con)
+        con.execute("UPDATE reviews SET report_status='removed', removed_at=? WHERE review_id=?",
+                    (datetime.datetime.now().isoformat(), d["review_id"]))
     else:
-        con.execute("UPDATE reviews SET report_status='reported' WHERE review_id=?", (d["review_id"],))
+        _ensure_report_ts(con)
+        con.execute("UPDATE reviews SET report_status='reported', reported_at=? WHERE review_id=?",
+                    (datetime.datetime.now().isoformat(), d["review_id"]))
     con.commit()
     return "ok"
 
