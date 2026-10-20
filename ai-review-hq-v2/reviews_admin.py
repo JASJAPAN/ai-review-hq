@@ -209,7 +209,8 @@ def stats():
     bystore = {}
     for s, st, c in con.execute("SELECT store, reply_status, COUNT(*) FROM reviews WHERE platform='hotpepper' GROUP BY store, reply_status"):
         bystore.setdefault(str(s), {})[str(st)] = c
-    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+    removed_by = {r[0]: r[1] for r in con.execute("SELECT store, COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='removed' GROUP BY store")}
+    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
 
 
 @reviews_bp.route("/run", methods=["POST"])
