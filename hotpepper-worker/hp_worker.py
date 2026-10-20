@@ -221,9 +221,10 @@ def main():
     except Exception:
         pass
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
         errors = []
         for acct in accts:
+            # 店舗ごとにブラウザを起動し直してメモリ肥大（OOM）を防ぐ
+            browser = p.chromium.launch(headless=True)
             ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
             page.on("dialog", lambda d: d.accept())  # confirm()ダイアログは常に承認（既定のdismissだと投稿がキャンセルされる）
             try:
@@ -274,6 +275,8 @@ def main():
                 except Exception: pass
             finally:
                 ctx.close()
+                try: browser.close()
+                except Exception: pass
         # --- 承認済みの違反報告を自動送信（ホットペッパー実画面仕様に準拠） ---
         KBN_MAP = [  # policy_clause/理由 → 違反ポリシー区分
             (("体験に基づ", "来店", "利用してい"), "01"), (("無関係", "関係がない", "関係のない"), "02"),
@@ -290,7 +293,6 @@ def main():
         t2 = {}
         try: t2 = api("/tasks") if MODE == "run" else {}
         except Exception: pass
-        browser.close()
         pend = t2.get("reports_pending_count", 0)
         if pend:
             notify(f"[口コミ管制室] 承認待ちの違反報告候補が{pend}件あります。管理画面で承認/却下してください。")
