@@ -213,7 +213,16 @@ def stats():
     report_by = {}
     for s, st, c in con.execute("SELECT store, report_status, COUNT(*) FROM reviews WHERE platform='hotpepper' AND report=1 GROUP BY store, report_status"):
         report_by.setdefault(str(s), {})[str(st)] = c
-    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+    removed_recent = []
+    try:
+        for s, rv, rt, pa, ra in con.execute(
+                "SELECT store, reviewer, rating, posted_at, removed_at FROM reviews "
+                "WHERE platform='hotpepper' AND report_status='removed' AND removed_at IS NOT NULL "
+                "ORDER BY removed_at DESC LIMIT 30"):
+            removed_recent.append({"store": s, "reviewer": rv, "rating": rt, "posted_at": pa, "removed_at": ra})
+    except Exception:
+        pass
+    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by, "hp_removed_recent": removed_recent}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
 
 
 @reviews_bp.route("/run", methods=["POST"])
