@@ -143,35 +143,48 @@ def send_reports_for(page, acct, errors):
     mine = [r for r in t.get("reports", []) if r.get("platform") == "hotpepper" and r["store"] == acct["name"]][:limit]
     sent = 0
     for rp in mine:
+        pg = None
         try:
-            open_review_list(page, unreplied_only=False)
+            pg = page.context.new_page()  # 口コミごとに新しいページ（メモリ肥大防止）
+            pg.on("dialog", lambda d: d.accept())
+            open_review_list(pg, unreplied_only=False)
             ext = rp["review_id"].replace("hp:", "", 1)
-            el = None
-            for _ in range(12):
-                el = find_item(page, ext, rp)
+            el = None; exhausted = False
+            for _ in range(60):  # 全ページ走査（古い口コミは深いページにある）
+                el = find_item(pg, ext, rp)
                 if el is not None: break
-                nxt = page.get_by_role("link", name=re.compile("次"))
-                if not nxt.count(): break
-                nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                nxt = pg.get_by_role("link", name=re.compile("次"))
+                if not nxt.count(): exhausted = True; break
+                nxt.first.click(); pg.wait_for_load_state("networkidle", timeout=60000)
             if el is None:
-                errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）"); continue
+                if exhausted:
+                    # 全ページ見ても掲載されていない = すでに非掲載（削除済み）として確定
+                    api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "removed"})
+                    print(f"{acct['name']} 違反報告: 全ページに掲載なし→削除済みとして確定（{rp['review_id']}）")
+                else:
+                    errors.append(f"{acct['name']} 違反報告: 対象口コミが見つからない（{rp['review_id']}）")
+                continue
             btn = el.locator("input.policyButton")
             if not btn.count():
                 api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"})
                 print(f"{acct['name']} 違反報告: 既に再審査中/掲載不可のため完了扱い（{rp['review_id']}）"); continue
-            btn.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
-            if "/ccm030/" not in page.url:
+            btn.first.click(); pg.wait_for_load_state("networkidle", timeout=60000)
+            if "/ccm030/" not in pg.url:
                 errors.append(f"{acct['name']} 違反報告: フォームに遷移できず（{rp['review_id']}）"); continue
-            page.locator(f"input[name='reportClaimKbn'][value='{pick_kbn(rp)}']").first.check()
-            page.locator("textarea[name='reason']").fill((rp.get("report_reason", "") or "")[:1400])
-            page.locator("input[type='button'][value='報告する']").first.click()
-            page.wait_for_load_state("networkidle", timeout=60000)
-            if "/doComplete" in page.url or "報告を完了しました" in page.inner_text("body"):
+            pg.locator(f"input[name='reportClaimKbn'][value='{pick_kbn(rp)}']").first.check()
+            pg.locator("textarea[name='reason']").fill((rp.get("report_reason", "") or "")[:1400])
+            pg.locator("input[type='button'][value='報告する']").first.click()
+            pg.wait_for_load_state("networkidle", timeout=60000)
+            if "/doComplete" in pg.url or "報告を完了しました" in pg.inner_text("body"):
                 api("/tasks/done", "POST", {"review_id": rp["review_id"], "kind": "report"}); sent += 1
             else:
                 errors.append(f"{acct['name']} 違反報告: 完了画面を確認できず（{rp['review_id']}）")
         except Exception as e:
             errors.append(f"{acct['name']} 違反報告失敗（{rp['review_id']}）: {str(e)[:120]}")
+        finally:
+            if pg is not None:
+                try: pg.close()
+                except Exception: pass
     return sent
 
 
@@ -189,7 +202,8 @@ def check_removals(page, acct, errors):
     except Exception as e:
         errors.append(f"{acct['name']} 削除照合: 一覧を開けず {str(e)[:80]}"); return 0
     remaining = dict(mine)
-    for _ in range(15):  # 全ページ走査
+    exhausted = False
+    for _ in range(60):  # 全ページ走査
         for rid, rp in list(remaining.items()):
             ext = rid.replace("hp:", "", 1)
             try:
@@ -201,8 +215,12 @@ def check_removals(page, acct, errors):
             break
         nxt = page.get_by_role("link", name=re.compile("次"))
         if not nxt.count():
-            break
+            exhausted = True; break
         nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+    if not exhausted and remaining:
+        # 最終ページまで確認できていないのに「消えた」と断定しない
+        errors.append(f"{acct['name']} 削除照合: 全ページを走査しきれず{len(remaining)}件は判定保留")
+        return 0
     removed = 0
     for rid in remaining:  # 全ページ見ても存在しない = 非掲載（削除成功）
         try:
