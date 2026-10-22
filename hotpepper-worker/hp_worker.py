@@ -289,7 +289,8 @@ def main():
                         else:
                             print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
                 rep_sent = send_reports_for(page, acct, errors)
-                removed = check_removals(page, acct, errors)
+                # 削除照合は全ページ走査で重いため、SKIP_REMOVALS=1 のジョブ（2時間おきループ等）では省略し毎朝の本番だけで行う
+                removed = 0 if os.environ.get("SKIP_REMOVALS") else check_removals(page, acct, errors)
                 print(f"[{acct['name']}] 取り込み{imported}件 / 返信投稿{done}件 / 違反報告{rep_sent}件 / 削除確認{removed}件 / 整理{cleaned}件")
                 if removed:
                     notify(f"[削除成功] {acct['name']}: 違反報告した口コミ{removed}件がホットペッパーから非掲載になりました。")
