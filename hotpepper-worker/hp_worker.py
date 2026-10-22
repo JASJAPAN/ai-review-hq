@@ -148,6 +148,9 @@ def send_reports_for(page, acct, errors):
             pg = page.context.new_page()  # 口コミごとに新しいページ（メモリ肥大防止）
             pg.on("dialog", lambda d: d.accept())
             open_review_list(pg, unreplied_only=False)
+            if not pg.locator(SEL_ITEM).count():
+                # 一覧が空 = 掲載自体が終了している可能性（店舗閉店・HP契約終了など）。個別削除と混同しない
+                errors.append(f"{acct['name']} 違反報告: 口コミ一覧が空のため判定保留（掲載終了の可能性）"); continue
             ext = rp["review_id"].replace("hp:", "", 1)
             el = None; exhausted = False
             for _ in range(60):  # 全ページ走査（古い口コミは深いページにある）
@@ -201,6 +204,10 @@ def check_removals(page, acct, errors):
         open_review_list(page, unreplied_only=False)
     except Exception as e:
         errors.append(f"{acct['name']} 削除照合: 一覧を開けず {str(e)[:80]}"); return 0
+    if not page.locator(SEL_ITEM).count():
+        # 一覧が0行 = 掲載自体が終了している可能性が高い。全件を「削除成功」と誤記録しない
+        errors.append(f"{acct['name']} 削除照合: 口コミ一覧が空のため判定保留（掲載終了の可能性・対象{len(mine)}件）")
+        return 0
     remaining = dict(mine)
     exhausted = False
     for _ in range(60):  # 全ページ走査
