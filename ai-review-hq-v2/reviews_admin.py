@@ -373,6 +373,24 @@ def tasks_requeue():
     con.commit()
     return jsonify({"requeued": cur.rowcount})
 
+@reviews_bp.route("/tasks/unremove", methods=["POST"])
+def tasks_unremove():
+    """掲載終了（店舗撤退等）で一覧が空になり誤って「削除成功」と記録された分を「送信済み」へ戻す。
+    body: {"store": "店名", "since": "ISO日時" or ""（空=その店の削除記録すべて）}"""
+    if not _auth(): return "forbidden", 403
+    body = request.get_json(force=True) or {}
+    store = body.get("store", ""); since = body.get("since", "")
+    if not store: return jsonify({"unremoved": 0})
+    con = db()
+    if since:
+        cur = con.execute("UPDATE reviews SET report_status='reported', removed_at=NULL "
+                          "WHERE platform='hotpepper' AND store=? AND report_status='removed' AND removed_at>=?", (store, since))
+    else:
+        cur = con.execute("UPDATE reviews SET report_status='reported', removed_at=NULL "
+                          "WHERE platform='hotpepper' AND store=? AND report_status='removed'", (store,))
+    con.commit()
+    return jsonify({"unremoved": cur.rowcount})
+
 def _ensure_report_ts(con):
     """reported_at / removed_at 列が無ければ追加（初回のみ）"""
     try: con.execute("ALTER TABLE reviews ADD COLUMN reported_at TEXT")

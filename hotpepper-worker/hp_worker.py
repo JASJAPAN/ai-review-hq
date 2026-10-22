@@ -238,6 +238,14 @@ def check_removals(page, acct, errors):
 
 
 def main():
+    fix = os.environ.get("HP_FIX_UNREMOVE", "")  # "店名|sinceISO;店名|"（since空=その店の削除記録すべて）
+    if fix:
+        for ent in fix.split(";"):
+            if not ent.strip(): continue
+            store, _, since = ent.partition("|")
+            r = api("/tasks/unremove", "POST", {"store": store.strip(), "since": since.strip()})
+            print(f"unremove {store.strip()}: {r}")
+        return
     accts = accounts()
     if not accts: print("no accounts configured"); return
     try:
