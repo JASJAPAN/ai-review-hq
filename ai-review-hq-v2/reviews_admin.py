@@ -363,13 +363,15 @@ def tasks_requeue():
     その中でDB上 posted/skipped になっているものは実際には返信が反映されていないので、再投稿キューに戻す。
     body: {"review_ids": ["hp:...", ...]}"""
     if not _auth(): return "forbidden", 403
-    ids = [str(r) for r in (request.get_json(force=True) or {}).get("review_ids", []) if str(r).startswith("hp:")][:100]
+    body = request.get_json(force=True) or {}
+    ids = [str(r) for r in body.get("review_ids", []) if str(r).startswith("hp:")][:100]
     if not ids: return jsonify({"requeued": 0})
     con = db()
     ph = ",".join("?" * len(ids))
+    statuses = "('posted','skipped')" if body.get("force") else "('posted')"  # force: 診断用にskippedも戻す
     cur = con.execute(
         f"UPDATE reviews SET reply_status=CASE WHEN reply!='' THEN 'todo' ELSE 'new' END "
-        f"WHERE platform='hotpepper' AND review_id IN ({ph}) AND reply_status='posted'", ids)
+        f"WHERE platform='hotpepper' AND review_id IN ({ph}) AND reply_status IN {statuses}", ids)
     # 'skipped'（再投稿を試みたが一覧で操作できなかったもの）は再キューしない。
     # 返信期限切れ等で一覧に表示はされるが返信操作できない口コミが todo→skipped→todo と無限循環するのを防ぐ。
     con.commit()

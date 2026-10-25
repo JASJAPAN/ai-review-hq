@@ -272,7 +272,8 @@ def main():
                 requeued = 0
                 if items:
                     try:
-                        requeued = api("/tasks/requeue", "POST", {"review_ids": ["hp:" + i["external_id"] for i in items]}).get("requeued", 0)
+                        requeued = api("/tasks/requeue", "POST", {"review_ids": ["hp:" + i["external_id"] for i in items],
+                                                                  "force": bool(os.environ.get("HP_FORCE_REQUEUE"))}).get("requeued", 0)
                         if requeued: print(f"{acct['name']} 再投稿キュー{requeued}件（投稿済み扱いだが未返信一覧に残存）")
                     except Exception:
                         pass
