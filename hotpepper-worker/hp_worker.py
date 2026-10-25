@@ -73,7 +73,7 @@ def scrape(page, store):
         items.append({"store": store, "reviewer": reviewer, "rating": rating, "comment": comment[:2000],
                       "posted_at": re.sub(r"[年月]", "/", date).replace("日", ""), "review_url": page.url, "external_id": ext,
                       "_hidden": hidden})
-    return [i for i in items if len(i["comment"]) > 5]
+    return items  # 本文なし（星のみ）の口コミも対象にして返信する（AIは「本文なし・星のみ」として返信文を生成する）
 
 def find_item(page, ext, task):
     for el in page.locator(SEL_ITEM).all():
