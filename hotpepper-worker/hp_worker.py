@@ -310,6 +310,13 @@ def main():
                             if vfail == 1: errors.append(f"{acct['name']} 返信投稿が画面に反映されない: {str(e)[:150]}")
                             if vfail >= 3:
                                 print(f"{acct['name']} 投稿未反映が{vfail}件連続のため、この店舗の残りをスキップ"); break
+                        elif "Page.fill" in str(e) or "commentText" in str(e):
+                            # 返信フォームが開けない（返信受付期間の終了など）。リトライし続けないよう整理済みにする
+                            try:
+                                api("/tasks/done", "POST", {"review_id": tk["review_id"], "kind": "reply_skipped"}); cleaned += 1
+                            except Exception:
+                                pass
+                            print("reply form unavailable:", tk["review_id"])
                         else:
                             print("reply failed:", tk["review_id"], e); errors.append(f"{acct['name']} 返信失敗: {str(e)[:120]}")
                 rep_sent = send_reports_for(page, acct, errors)
