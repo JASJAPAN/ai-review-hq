@@ -1,7 +1,7 @@
 """媒体管制室 Blueprint（ヒトサラ ⇄ ホットペッパーのズレ検出と貼り付け用原稿）
 既存Flaskアプリに: app.register_blueprint(media_bp)
 
-- POST /admin/media/run            全店チェックを開始（Cron 月1回。X-Run-Token または管理画面ログイン）
+- POST /admin/media/run            全店チェックを開始（Cron 毎日。X-Run-Token または管理画面ログイン）
 - GET  /admin/media/               ダッシュボード（店舗一覧・ズレ件数・実行状況）
 - GET  /admin/media/store/<key>    店舗のズレ一覧と、ヒトサラ入力欄ごとの貼り付け用原稿
 - GET  /admin/media/store/<key>/snapshot  読み取った内容（確認用JSON）
@@ -29,6 +29,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
 DB_PATH = DATA_DIR / "media.db"
 SEED = Path(__file__).parent / "media_stores.json"
 STALE_MIN = 60   # これ以上「実行中」のままなら落ちたとみなす
+SEED_STEP = "seed_daily_all_20261025"   # 店舗一覧の追加反映（1回だけ）の目印
 # 自動反映したあと、公開ページに出るまで時間がかかる（2026/10/3：管理画面では変わったが公開ページは旧名のまま）。
 # この日数のあいだは、同じズレを新しい項目として出し直さない
 GRACE_DAYS = int(os.environ.get("MEDIA_WRITTEN_GRACE_DAYS", "3"))
@@ -91,6 +92,17 @@ def db():
             con.execute("INSERT INTO media_stores(key,name,hp_url,hs_id,use_reserve,enabled,note,sort) VALUES(?,?,?,?,?,?,?,?)",
                         (s["key"], s["name"], s.get("hp_url", ""), s.get("hs_id", ""), int(s.get("use_reserve", 1)),
                          int(s.get("enabled", 0)), s.get("note", ""), n))
+        con.commit()
+    con.execute("CREATE TABLE IF NOT EXISTS media_meta(k TEXT PRIMARY KEY, v TEXT)")
+    if SEED.exists() and not con.execute("SELECT 1 FROM media_meta WHERE k=?", (SEED_STEP,)).fetchone():
+        # 1回だけ：鹿児島全店を毎日チェックの対象にする（2026/10/25）。
+        # URLは未登録の店にだけ入れ、管理画面で入れた値は上書きしない。以後、管理画面で外した店は戻さない
+        for s in json.loads(SEED.read_text(encoding="utf-8")):
+            if s.get("hp_url") and s.get("enabled"):
+                con.execute("UPDATE media_stores SET hp_url=CASE WHEN COALESCE(hp_url,'')='' THEN ? ELSE hp_url END, "
+                            "enabled=1, note=CASE WHEN COALESCE(hp_url,'')='' THEN ? ELSE note END WHERE key=?",
+                            (s["hp_url"], s.get("note", ""), s["key"]))
+        con.execute("INSERT INTO media_meta(k,v) VALUES(?,?)", (SEED_STEP, _now()))
         con.commit()
     return con
 
@@ -290,7 +302,10 @@ def run_store(con, run_id, store):
     cutoff = (datetime.now(JST) - timedelta(days=GRACE_DAYS)).isoformat(timespec="seconds")
     written = {r["sig"]: r["closed_at"] for r in con.execute(
         "SELECT sig, closed_at FROM media_items WHERE store_key=? AND status='written' ORDER BY closed_at", (store["key"],))}
-    rows = []
+    # 前回のチェックで出ていた項目。中身が同じなら案を作り直さない（毎日チェックでもAI費用を増やさない）
+    prev = {r["sig"]: r for r in con.execute(
+        "SELECT sig, hp, hs, drafts FROM media_items WHERE store_key=? AND status IN ('open','failed')", (store["key"],))}
+    rows, new = [], 0
     items = verify_extras(D.diff_all(hp, hs), hp)
     hp.pop("course_text", None); hs.pop("course_text", None)
     for item in sorted(items, key=lambda x: D.LEVEL_ORDER[x["level"]]):
@@ -302,7 +317,12 @@ def run_store(con, run_id, store):
                 continue   # 自動反映済み。公開ページへの反映待ち
             item["note"] = (f"{written[sig][:10]} に自動反映しましたが、公開ページにまだ出ていません。"
                             "ヒトサラの管理画面で登録内容を確認してください。 " + (item.get("note") or "")).strip()
-        drafts = make_drafts(item, store)
+        old = prev.get(sig)
+        if old and old["hp"] == item["hp"] and old["hs"] == item["hs"]:
+            drafts = json.loads(old["drafts"] or "[]")
+        else:
+            drafts = make_drafts(item, store)
+            new += 1
         text = auto_text(item["kind"], item.get("ref", ""), drafts, store) if store["auto_approve"] else None
         rows.append((run_id, store["key"], sig, item["level"], item["kind"], item["title"], item["hp"], item["hs"],
                      item["field"], item["note"], item.get("ref", ""), json.dumps(drafts, ensure_ascii=False),
@@ -315,7 +335,7 @@ def run_store(con, run_id, store):
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     con.execute("UPDATE media_stores SET checked_at=?, last_error='' WHERE key=?", (_now(), store["key"]))
     con.commit()
-    return len(rows)
+    return len(rows), new
 
 
 def run_all(run_id, keys=None):
@@ -330,7 +350,8 @@ def run_all(run_id, keys=None):
             try:
                 if not (F.HP_URL_RE.match(s["hp_url"] or "") and F.HS_ID_RE.match(s["hs_id"] or "")):
                     raise RuntimeError("ホットペッパーURLかヒトサラIDが未登録です")
-                log.append(f"{s['name']}：ズレ {run_store(con, run_id, s)}件")
+                total, new = run_store(con, run_id, s)
+                log.append(f"{s['name']}：ズレ {total}件（前回から変わった・新しく出た {new}件）")
             except Exception as e:
                 con.rollback()
                 msg = f"{type(e).__name__}: {e}"[:300]
@@ -420,7 +441,7 @@ TPL_INDEX = """{% extends "admin/base.html" %}{% block title %}媒体管制室{%
     {{ {'running':'実行中…（再読み込みで更新）','done':'完了','error':'中断'}[last.status] }}</p>
     {% if last.log %}<p class="pre">{{last.log}}</p>{% endif %}
   {% else %}<p class="empty">まだ実行していません。</p>{% endif %}
-  <p class="note">毎月1日 9:00 に自動実行（Render Cron）。チェックで読むのは公開ページだけです。</p>
+  <p class="note">毎日 8:00 に全店を1店ずつ自動チェック（Render Cron）。チェックで読むのは公開ページだけです。</p>
   <p class="note">自動反映：承認済み（反映待ち）{{auto.approved}}件 ／ 失敗 {{auto.failed}}件 ／ 反映済み {{auto.written}}件
     ／ <a href="{{url_for('media.recon')}}">ワーカーの画面記録を見る</a></p>
 </div>
@@ -449,7 +470,7 @@ TPL_INDEX = """{% extends "admin/base.html" %}{% block title %}媒体管制室{%
       <option value="1" {{'selected' if not edit or edit.use_reserve}}>即時予約管理（プラン管理・コース管理）</option>
       <option value="0" {{'selected' if edit and not edit.use_reserve}}>オーナー管理（コースメニュー）</option></select></label>
     <label>メモ<input name="note" value="{{edit.note if edit else ''}}"></label>
-    <label><input type="checkbox" name="enabled" value="1" style="display:inline;width:auto" {{'checked' if edit and edit.enabled}}> 月1チェックの対象にする</label>
+    <label><input type="checkbox" name="enabled" value="1" style="display:inline;width:auto" {{'checked' if edit and edit.enabled}}> 毎日チェックの対象にする</label>
     <label><input type="checkbox" name="auto_approve" value="1" style="display:inline;width:auto" {{'checked' if edit and edit.auto_approve}}> キャッチコピーとコース名の文言の差は、承認なしで自動反映する</label>
     <p class="note">料金の変更・非掲載・AIが縮めた文言・紹介文は、この設定に関係なく承認が必要です。</p>
     <button class="btn primary">保存</button>

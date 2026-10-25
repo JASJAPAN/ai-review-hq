@@ -3,6 +3,7 @@
 コース名・価格は 2026/10/3 時点の「うみどり 天文館店」の公開ページ（ホットペッパー／ヒトサラ）の実データ。
 キャッチコピーなど一部はテスト用の仮の値（コメントで明記）。
 """
+import json
 import os
 import sys
 import tempfile
@@ -19,6 +20,8 @@ import media_admin as M  # noqa: E402
 import media_ai as AI  # noqa: E402
 import media_diff as D  # noqa: E402
 import media_fetch as F  # noqa: E402
+
+REAL_SEED = M.SEED
 
 TAIL = "/3H飲み放題＆個室確約"
 HP_COURSES = [  # (コース名, 税込価格, 品数欄)
@@ -167,6 +170,10 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "DATA_DIR", tmp_path)
     monkeypatch.setattr(M, "DB_PATH", tmp_path / "media.db")
     monkeypatch.setattr(M, "RECON_PATH", tmp_path / "hs_recon.json")
+    seed = tmp_path / "stores.json"   # 画面テストは試行店舗うみどり1店だけで行う
+    seed.write_text(json.dumps([s if s["key"] == "umidori" else dict(s, enabled=0)
+                                for s in json.loads(REAL_SEED.read_text(encoding="utf-8"))], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(M, "SEED", seed)
     monkeypatch.setenv("MEDIA_SYNC_INLINE", "1")
     monkeypatch.setenv("REPLY_RUN_TOKEN", "tok")
     monkeypatch.setattr(F, "page_text", lambda url, limit=None: url)
@@ -660,3 +667,46 @@ def test_pipeline_reads_hp_coupons_from_html_first(client, monkeypatch):
     snap = client.get("/admin/media/store/umidori/snapshot").get_json()
     assert [c["title"][:8] for c in snap["hp"]["coupons"]] == ["【早割&遅割】1", "【誕生日・記念日"]
     assert snap["hp"]["warnings"] == []
+
+
+def test_seed_enables_every_kagoshima_store_once_except_nansatsu():
+    seed = json.loads(REAL_SEED.read_text(encoding="utf-8"))
+    on = {s["key"] for s in seed if s["enabled"]}
+    assert "nansatsu" not in on and "satsumakogen" not in on and len(on) == 11
+    assert all(F.HP_URL_RE.match(s["hp_url"]) and F.HS_ID_RE.match(s["hs_id"]) for s in seed if s["enabled"])
+    assert len({s["hp_url"] for s in seed}) == len(seed)          # 同じURLを2店に入れていない
+
+
+def test_seed_step_fills_blanks_once_and_keeps_manual_values(monkeypatch, tmp_path):
+    monkeypatch.setattr(M, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(M, "DB_PATH", tmp_path / "media.db")
+    monkeypatch.setattr(M, "SEED", REAL_SEED)
+    con = M.db()
+    con.execute("DELETE FROM media_meta")                               # 前の版で作られたDBを再現
+    con.execute("UPDATE media_stores SET enabled=0, hp_url='' WHERE key IN ('kakoiya','izumi')")
+    con.execute("UPDATE media_stores SET hp_url='https://www.hotpepper.jp/strJ000000001/', enabled=0 WHERE key='gattonero'")
+    con.execute("UPDATE media_stores SET enabled=0 WHERE key='nansatsu'")
+    con.commit()
+    con = M.db()
+    st = {r["key"]: r for r in con.execute("SELECT * FROM media_stores")}
+    assert st["kakoiya"]["enabled"] == 1 and st["kakoiya"]["hp_url"].endswith("strJ003985352/")
+    assert st["gattonero"]["hp_url"].endswith("strJ000000001/")       # 管理画面で入れたURLは上書きしない
+    assert st["gattonero"]["enabled"] == 1 and st["nansatsu"]["enabled"] == 0
+    con.execute("UPDATE media_stores SET enabled=0 WHERE key='kakoiya'"); con.commit()
+    assert M.db().execute("SELECT enabled FROM media_stores WHERE key='kakoiya'").fetchone()[0] == 0   # 2回目以降は戻さない
+
+
+def test_daily_rerun_reuses_drafts_and_counts_only_changes(client, monkeypatch):
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
+    calls = []
+    real = M.make_drafts
+    monkeypatch.setattr(M, "make_drafts", lambda item, store: calls.append(item["kind"]) or real(item, store))
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
+    con = M.db()
+    log = con.execute("SELECT log FROM media_runs ORDER BY id DESC LIMIT 1").fetchone()["log"]
+    assert calls == [] and "新しく出た 0件" in log                      # 何も変わっていなければ案は作り直さない
+    snap = hs_snap(); snap["basics"]["catch"] = "別のキャッチコピー"
+    monkeypatch.setattr(AI, "extract_basics", lambda side, text: (hp_snap() if side == "hp" else snap)["basics"])
+    client.post("/admin/media/run", headers={"X-Run-Token": "tok"})
+    log = M.db().execute("SELECT log FROM media_runs ORDER BY id DESC LIMIT 1").fetchone()["log"]
+    assert calls == ["catch"] and "新しく出た 1件" in log
