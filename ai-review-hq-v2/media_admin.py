@@ -30,6 +30,7 @@ DB_PATH = DATA_DIR / "media.db"
 SEED = Path(__file__).parent / "media_stores.json"
 STALE_MIN = 60   # これ以上「実行中」のままなら落ちたとみなす
 SEED_STEP = "seed_daily_all_20261025"   # 店舗一覧の追加反映（1回だけ）の目印
+AUTO_STEP = "seed_auto_all_20261025"    # 全店の自動反映オン（1回だけ）の目印
 # 自動反映したあと、公開ページに出るまで時間がかかる（2026/10/3：管理画面では変わったが公開ページは旧名のまま）。
 # この日数のあいだは、同じズレを新しい項目として出し直さない
 GRACE_DAYS = int(os.environ.get("MEDIA_WRITTEN_GRACE_DAYS", "3"))
@@ -103,6 +104,14 @@ def db():
                             "enabled=1, note=CASE WHEN COALESCE(hp_url,'')='' THEN ? ELSE note END WHERE key=?",
                             (s["hp_url"], s.get("note", ""), s["key"]))
         con.execute("INSERT INTO media_meta(k,v) VALUES(?,?)", (SEED_STEP, _now()))
+        con.commit()
+    if SEED.exists() and not con.execute("SELECT 1 FROM media_meta WHERE k=?", (AUTO_STEP,)).fetchone():
+        # 1回だけ：対象の全店で、キャッチコピーとコース名の文言の差を承認なしで自動反映にする（2026/10/25 藤田さん決定）。
+        # 以後、管理画面で切った店は戻さない
+        for s in json.loads(SEED.read_text(encoding="utf-8")):
+            if s.get("auto_approve"):
+                con.execute("UPDATE media_stores SET auto_approve=1 WHERE key=? AND enabled=1", (s["key"],))
+        con.execute("INSERT INTO media_meta(k,v) VALUES(?,?)", (AUTO_STEP, _now()))
         con.commit()
     return con
 

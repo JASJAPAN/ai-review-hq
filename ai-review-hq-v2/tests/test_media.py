@@ -171,7 +171,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "DB_PATH", tmp_path / "media.db")
     monkeypatch.setattr(M, "RECON_PATH", tmp_path / "hs_recon.json")
     seed = tmp_path / "stores.json"   # 画面テストは試行店舗うみどり1店だけで行う
-    seed.write_text(json.dumps([s if s["key"] == "umidori" else dict(s, enabled=0)
+    seed.write_text(json.dumps([dict(s, auto_approve=0) if s["key"] == "umidori" else dict(s, enabled=0, auto_approve=0)
                                 for s in json.loads(REAL_SEED.read_text(encoding="utf-8"))], ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(M, "SEED", seed)
     monkeypatch.setenv("MEDIA_SYNC_INLINE", "1")
@@ -694,6 +694,8 @@ def test_seed_step_fills_blanks_once_and_keeps_manual_values(monkeypatch, tmp_pa
     assert st["gattonero"]["enabled"] == 1 and st["nansatsu"]["enabled"] == 0
     con.execute("UPDATE media_stores SET enabled=0 WHERE key='kakoiya'"); con.commit()
     assert M.db().execute("SELECT enabled FROM media_stores WHERE key='kakoiya'").fetchone()[0] == 0   # 2回目以降は戻さない
+    auto = {r["key"] for r in M.db().execute("SELECT key FROM media_stores WHERE auto_approve=1")}
+    assert "umidori" in auto and "gattonero" in auto and "nansatsu" not in auto and "satsumakogen" not in auto
 
 
 def test_daily_rerun_reuses_drafts_and_counts_only_changes(client, monkeypatch):
