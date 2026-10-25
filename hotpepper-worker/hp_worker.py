@@ -81,7 +81,22 @@ def find_item(page, ext, task):
         if ext in hidden.values(): return el
         # ハッシュID: 投稿者名＋本文先頭で照合
         full = el.locator("input[name='reportText']"); comment = (full.first.get_attribute("value") or "") if full.count() else ""
-        if task and task["reviewer"] and task["reviewer"] in el.inner_text() and comment[:40] == task["comment"][:40]: return el
+        if task and task.get("reviewer") and task["reviewer"] in el.inner_text() and comment[:40] == (task.get("comment") or "")[:40]: return el
+        # 最終手段: scrape()と同一の材料でこの行のハッシュIDを再計算して突き合わせる
+        # （投稿者名リンクが無い行や本文の表記ゆれで上の照合が失敗するケースの救済）
+        if task and task.get("store"):
+            try:
+                cell = el.locator("tr:first-child > td:nth-child(4)")
+                celltxt = cell.inner_text() if cell.count() else el.inner_text()
+                namel = el.locator("tr:first-child > td:nth-child(4) a")
+                reviewer = namel.first.inner_text().strip() if namel.count() else ""
+                c = (full.first.get_attribute("value") or "").strip() if full.count() else celltxt
+                datel = el.locator("span[id^='contributionDate']")
+                date = datel.first.inner_text().strip() if datel.count() else ""
+                if hashlib.md5(f"{task['store']}|{date}|{reviewer}|{c[:60]}".encode()).hexdigest()[:16] == ext:
+                    return el
+            except Exception:
+                pass
     return None
 
 def post_reply(page, task):
