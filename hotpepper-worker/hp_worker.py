@@ -252,7 +252,43 @@ def check_removals(page, acct, errors):
     return removed
 
 
+def listdiag():
+    """一覧ページの現状診断: URL・絞り込みリンク・行の中身をログに出す（HP_MODE=listdiag）"""
+    accts = accounts()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
+        for acct in accts[:2]:
+            try:
+                login(page, acct)
+                page.goto(REVIEW_LIST_URL, wait_until="networkidle", timeout=60000)
+                print(f"=== {acct['name']} URL: {page.url}")
+                for a in page.locator("a").all()[:120]:
+                    href = a.get_attribute("href") or ""
+                    if "show" in href or "eport" in href or "omment" in href:
+                        print(f"LINK: [{(a.inner_text() or '').strip()[:25]}] -> {href[:110]}")
+                rows = page.locator(SEL_ITEM).all()
+                print(f"rows(全件ビュー): {len(rows)}")
+                for el in rows[:8]:
+                    t = re.sub(r"\s+", " ", el.inner_text())[:120]
+                    has_reply_link = el.locator("tr:first-child > td:nth-child(4) a").count()
+                    print(f"ROW: 返信リンク{has_reply_link} | {t}")
+                # 未返信絞り込みを試す
+                nc = page.locator("a[href*='showReportListNoComment']")
+                print(f"NoCommentリンク: {nc.count()}個")
+                if nc.count():
+                    nc.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                    print(f"絞り込み後URL: {page.url} / rows: {page.locator(SEL_ITEM).count()}")
+                    for el in page.locator(SEL_ITEM).all()[:8]:
+                        t = re.sub(r"\s+", " ", el.inner_text())[:120]
+                        print(f"NCROW: {t}")
+            except Exception:
+                traceback.print_exc()
+        browser.close()
+
 def main():
+    if MODE == "listdiag":
+        return listdiag()
     fix = os.environ.get("HP_FIX_UNREMOVE", "")  # "店名|sinceISO;店名|"（since空=その店の削除記録すべて）
     if fix:
         for ent in fix.split(";"):
