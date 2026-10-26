@@ -53,8 +53,11 @@ REVIEW_LIST_URL = "https://www.cms.hotpepper.jp/CLP/ccm010/showReportListAllForA
 def open_review_list(page, unreplied_only=True):
     # 指示書対応: メニューのリンクを探さず、口コミ一覧を直接GETで開く
     page.goto(REVIEW_LIST_URL, wait_until="networkidle", timeout=60000)
-    if unreplied_only and page.locator("a[href*='showReportListNoComment']").count():
-        page.locator("a[href*='showReportListNoComment']").first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+    if unreplied_only:
+        # 未返信が0件の店では「未コメント」リンク自体が表示されないため、クリックではなくURL直接遷移で絞り込む。
+        # （リンクが無いとき全件一覧のまま処理すると、返信済みの口コミを未返信と誤認する）
+        page.goto("https://www.cms.hotpepper.jp/CLP/ccm010/showReportListNoComment",
+                  wait_until="networkidle", timeout=60000)
 
 # ---------- 口コミ抽出 ----------
 SEL_ITEM = "table.style01:has(span[id^='contributionDate'])"
