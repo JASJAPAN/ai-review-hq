@@ -227,13 +227,36 @@ def check_removals(page, acct, errors):
         errors.append(f"{acct['name']} 削除照合: 口コミ一覧が空のため判定保留（掲載終了の可能性・対象{len(mine)}件）")
         return 0
     remaining = dict(mine)
+    # 照合用の補助インデックス（投稿者名＋本文先頭 → review_id）
+    bytext = {}
+    for rid, rp in mine.items():
+        key = (rp.get("reviewer") or "", (rp.get("comment") or "")[:40])
+        if key[0]: bytext.setdefault(key, rid)
     exhausted = False
-    for _ in range(60):  # 全ページ走査
-        for rid, rp in list(remaining.items()):
-            ext = rid.replace("hp:", "", 1)
+    for _ in range(60):  # 全ページ走査（1ページにつき1回だけ行を読む: 口コミごとに探し直さない）
+        for el in page.locator(SEL_ITEM).all():
+            if not remaining:
+                break
             try:
-                if find_item(page, ext, rp) is not None:
-                    remaining.pop(rid)
+                hidden_vals = set(filter(None, (h.get_attribute("value") for h in el.locator("input[type='hidden']").all())))
+                cell = el.locator("tr:first-child > td:nth-child(4)")
+                celltxt = cell.inner_text() if cell.count() else el.inner_text()
+                namel = el.locator("tr:first-child > td:nth-child(4) a")
+                reviewer = namel.first.inner_text().strip() if namel.count() else ""
+                full = el.locator("input[name='reportText']")
+                c = (full.first.get_attribute("value") or "").strip() if full.count() else celltxt
+                datel = el.locator("span[id^='contributionDate']")
+                date = datel.first.inner_text().strip() if datel.count() else ""
+                rowhash = hashlib.md5(f"{acct['name']}|{date}|{reviewer}|{c[:60]}".encode()).hexdigest()[:16]
+                hit = None
+                for rid in remaining:
+                    ext = rid.replace("hp:", "", 1)
+                    if ext in hidden_vals or ext == rowhash:
+                        hit = rid; break
+                if hit is None and reviewer:
+                    hit = bytext.get((reviewer, c[:40]))
+                if hit in remaining:
+                    remaining.pop(hit)
             except Exception:
                 pass
         if not remaining:
@@ -259,7 +282,7 @@ def listdiag():
     """一覧ページの現状診断: URL・絞り込みリンク・行の中身をログに出す（HP_MODE=listdiag）"""
     accts = accounts()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--disable-gpu"])
         ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
         for acct in accts[:2]:
             try:
@@ -311,7 +334,7 @@ def main():
         errors = []
         for acct in accts:
             # 店舗ごとにブラウザを起動し直してメモリ肥大（OOM）を防ぐ
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--disable-gpu"])
             ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
             page.on("dialog", lambda d: d.accept())  # confirm()ダイアログは常に承認（既定のdismissだと投稿がキャンセルされる）
             try:
@@ -403,7 +426,7 @@ def probe():
     pairs = [s.split("|", 1) for s in os.environ["HP_PROBE_IDS"].split(";") if s.strip()]
     pw = os.environ["HP_PROBE_PW"]
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--disable-gpu"])
         for pid, label in pairs:
             ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
             page.on("dialog", lambda d: d.accept())  # confirm()ダイアログは常に承認（既定のdismissだと投稿がキャンセルされる）
