@@ -213,6 +213,16 @@ def stats():
     report_by = {}
     for s, st, c in con.execute("SELECT store, report_status, COUNT(*) FROM reviews WHERE platform='hotpepper' AND report=1 GROUP BY store, report_status"):
         report_by.setdefault(str(s), {})[str(st)] = c
+    rereport = {}
+    try:
+        rereport = {
+            "queued": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='approved' AND IFNULL(report_attempts,1)>=2").fetchone()[0],
+            "resent": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='reported' AND IFNULL(report_attempts,1)>=2").fetchone()[0],
+            "removed_after_rereport": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='removed' AND IFNULL(report_attempts,1)>=2").fetchone()[0],
+            "exhausted_sales_route": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND IFNULL(no_more_angles,0)=1").fetchone()[0],
+        }
+    except Exception:
+        pass
     removed_recent = []
     try:
         for s, rv, rt, pa, ra in con.execute(
@@ -222,7 +232,7 @@ def stats():
             removed_recent.append({"store": s, "reviewer": rv, "rating": rt, "posted_at": pa, "removed_at": ra})
     except Exception:
         pass
-    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by, "hp_removed_recent": removed_recent}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by, "hp_removed_recent": removed_recent, "hp_rereport": rereport}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
 
 
 @reviews_bp.route("/run", methods=["POST"])
@@ -344,6 +354,12 @@ def rejudge_rejected(budget_sec=90, limit=6):
                 con.commit(); n += 1
             except Exception as e:
                 print("rejudge_rejected error:", r["review_id"], repr(e)); time.sleep(2)
+        if rows:
+            left = con.execute("""SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='reported'
+                                  AND IFNULL(no_more_angles,0)=0 AND IFNULL(report_attempts,1) < 5
+                                  AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'
+                                  AND (reported_at IS NULL OR reported_at < ?)""", (cutoff,)).fetchone()[0]
+            print(f"rejudge_rejected: {n}件処理（審査落ちの残り対象 {left}件）")
         return n
     finally:
         _judge_lock.release()
