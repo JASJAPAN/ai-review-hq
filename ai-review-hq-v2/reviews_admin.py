@@ -240,10 +240,12 @@ def run():
     """Render Cron Job から15分おき。Google口コミの取得〜自動返信"""
     if not _auth(): return "forbidden", 403
     judged = judge_pending(budget_sec=15)
-    # ★2以下の既存口コミを積極基準で報告判定し直す（バックグラウンド・返信には触れない）
-    threading.Thread(target=rejudge_reports, kwargs={"budget_sec": 240, "limit": 40}, daemon=True).start()
-    # 審査落ち（送信後3週間たっても非掲載にならない）報告を別角度で組み直して再送信キューへ（最大5回）
-    threading.Thread(target=rejudge_rejected, kwargs={"budget_sec": 90, "limit": 6}, daemon=True).start()
+    # ★2以下の既存口コミの報告判定やり直し → 審査落ち報告の別角度再構成（最大5回）を直列で実行
+    # （同じ_judge_lockを使うため並列に起動すると後者が毎回ロック取得に失敗して空振りする）
+    def _report_bg():
+        rejudge_reports(budget_sec=240, limit=40)
+        rejudge_rejected(budget_sec=90, limit=6)
+    threading.Thread(target=_report_bg, daemon=True).start()
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
         return f"google not configured; judged {judged}", 200
