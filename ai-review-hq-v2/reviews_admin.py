@@ -2,7 +2,7 @@
 import os, datetime
 from flask import Blueprint, render_template_string, request, redirect, url_for, jsonify, session
 from google_reviews import db, post_reply, mark_posted, upsert
-from review_judge import judge
+from review_judge import judge, judge_rereport
 
 reviews_bp = Blueprint("reviews", __name__, url_prefix="/admin/replies")
 
@@ -232,6 +232,8 @@ def run():
     judged = judge_pending(budget_sec=15)
     # ★2以下の既存口コミを積極基準で報告判定し直す（バックグラウンド・返信には触れない）
     threading.Thread(target=rejudge_reports, kwargs={"budget_sec": 240, "limit": 40}, daemon=True).start()
+    # 審査落ち（送信後3週間たっても非掲載にならない）報告を別角度で組み直して再送信キューへ（最大5回）
+    threading.Thread(target=rejudge_rejected, kwargs={"budget_sec": 90, "limit": 6}, daemon=True).start()
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
         return f"google not configured; judged {judged}", 200
@@ -307,6 +309,41 @@ def rejudge_reports(budget_sec=60, limit=40):
             except Exception as e:
                 print("rejudge error:", r["review_id"], repr(e)); time.sleep(2)
         if n: print(f"rejudge_reports: {n}件を再判定")
+        return n
+    finally:
+        _judge_lock.release()
+
+def rejudge_rejected(budget_sec=90, limit=6):
+    """送信から3週間たっても非掲載にならない違反報告を「審査落ち」とみなし、
+    前回と異なる条項・論点で報告文を組み直して再送信キューへ戻す。
+    上限5回（初回含む）。新しい角度が組めないものは no_more_angles=1 で打ち切り（営業ルート対応リスト行き）。"""
+    if not _judge_lock.acquire(blocking=False): return 0
+    try:
+        con = db(); _ensure_report_ts(con); t0 = time.time(); n = 0
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=21)).isoformat()
+        rows = con.execute("""SELECT * FROM reviews WHERE platform='hotpepper' AND report_status='reported'
+                              AND IFNULL(no_more_angles,0)=0 AND IFNULL(report_attempts,1) < 5
+                              AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'
+                              AND (reported_at IS NULL OR reported_at < ?)
+                              ORDER BY IFNULL(reported_at,'') LIMIT ?""", (cutoff, limit)).fetchall()
+        for r in rows:
+            if time.time() - t0 > budget_sec: break
+            try:
+                used = r["report_angles"] or r["policy_clause"] or ""
+                j = judge_rereport(r["store"], r["rating"], r["comment"] or "", r["reviewer"] or "",
+                                   prev_reason=r["report_reason"] or "", used_angles=used)
+                attempts = r["report_attempts"] or 1
+                if j.get("report"):
+                    angles = (used + "／" + (j.get("policy_clause") or ""))[:500].strip("／")
+                    con.execute("""UPDATE reviews SET report=1, policy_clause=?, report_reason=?, report_status='approved',
+                                   report_attempts=?, report_angles=? WHERE review_id=?""",
+                                (j.get("policy_clause", ""), j.get("report_reason", ""), attempts + 1, angles, r["review_id"]))
+                    print(f"再報告キュー（{attempts + 1}回目）: {r['store']} {r['review_id']} 条項: {j.get('policy_clause','')}")
+                else:
+                    con.execute("UPDATE reviews SET no_more_angles=1 WHERE review_id=?", (r["review_id"],))
+                con.commit(); n += 1
+            except Exception as e:
+                print("rejudge_rejected error:", r["review_id"], repr(e)); time.sleep(2)
         return n
     finally:
         _judge_lock.release()
@@ -396,11 +433,14 @@ def tasks_unremove():
     return jsonify({"unremoved": cur.rowcount})
 
 def _ensure_report_ts(con):
-    """reported_at / removed_at 列が無ければ追加（初回のみ）"""
-    try: con.execute("ALTER TABLE reviews ADD COLUMN reported_at TEXT")
-    except Exception: pass
-    try: con.execute("ALTER TABLE reviews ADD COLUMN removed_at TEXT")
-    except Exception: pass
+    """reported_at / removed_at / 再報告管理列 が無ければ追加（初回のみ）"""
+    for ddl in ("ALTER TABLE reviews ADD COLUMN reported_at TEXT",
+                "ALTER TABLE reviews ADD COLUMN removed_at TEXT",
+                "ALTER TABLE reviews ADD COLUMN report_attempts INTEGER",
+                "ALTER TABLE reviews ADD COLUMN report_angles TEXT",
+                "ALTER TABLE reviews ADD COLUMN no_more_angles INTEGER"):
+        try: con.execute(ddl)
+        except Exception: pass
 
 @reviews_bp.route("/tasks/done", methods=["POST"])
 def tasks_done():

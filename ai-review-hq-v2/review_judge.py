@@ -31,6 +31,43 @@ POLICY = {
 }
 
 
+def judge_rereport(store, rating, comment, reviewer="", prev_reason="", used_angles=""):
+    """審査落ちした違反報告を、前回と異なる条項・論点で組み直す（再報告用・★2以下のみ呼ばれる前提）。
+    返り値: dict(report, policy_clause, report_reason, confidence)"""
+    prompt = f"""あなたは飲食店「{store}」の口コミ運用責任者の代理人です。
+以下の口コミについて、ホットペッパーグルメ運営へ違反報告を提出しましたが、審査の結果、非掲載にはなりませんでした。
+再審査を求めるため、報告文を作り直します。
+
+【投稿者】{reviewer or "不明"}
+【星評価】{rating}
+【本文】
+{comment or "（本文なし・星のみ）"}
+
+【これまでに主張した条項】{used_angles or "（記録なし）"}
+【前回の報告文（冒頭）】{(prev_reason or "")[:300]}
+
+{POLICY["hotpepper"]}
+
+作業: 前回と【異なる条項】を主軸に、本文の記載を引用しながら新しい論点で報告理由（300〜500字）を組み立ててください。
+- 構成: ①冒頭で該当条項名を明記 ②本文のどの記載がなぜ該当するかを短い引用で断定的に示す ③掲載継続による店舗の実害を一文 ④「掲載基準に照らした非掲載措置を強く要請いたします」で結ぶ
+- 守る一線: 本文に存在しない事実や推測を根拠にしない。投稿者への人格攻撃・法的措置の示唆はしない。丁寧語は維持する
+- 前回と同じ条項の言い換えしかできない場合、またはどの条項にも新しく結び付けられない場合は report=false にしてください（無理にひねり出さない）
+
+出力は次のJSONのみ（前後に説明やコードフェンス不要）:
+{{"report": true/false, "policy_clause": "該当条項名 or 空", "report_reason": "報告理由 or 空", "confidence": 0.0〜1.0}}"""
+    client = anthropic.Anthropic()
+    msg = client.messages.create(model=MODEL, max_tokens=800,
+                                 messages=[{"role": "user", "content": prompt}])
+    text = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        d = json.loads(text)
+    except Exception:
+        return {"report": False, "policy_clause": "", "report_reason": "", "confidence": 0}
+    # 再報告は通常より基準を上げる（confidence 0.6 以上のみ）
+    d["report"] = bool(d.get("report")) and float(d.get("confidence", 0)) >= 0.6 and bool(d.get("report_reason"))
+    return d
+
+
 def judge(platform, store, rating, comment, reviewer="", **extra):
     """返り値: dict(action, reply, report, report_reason, policy_clause, confidence)"""
     profile = STORE_PROFILE.get(store, "")
