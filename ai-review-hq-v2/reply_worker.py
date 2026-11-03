@@ -17,8 +17,29 @@ def stores():
             name, loc = item.split(":", 1)
             yield name.strip(), loc.strip(), ACCOUNT_ID
 
+def drain_auto(con):
+    """autoキューに溜まったGoogle返信を実際に投稿する（従来はキューに入れるだけで投稿処理が無かった）。
+    口コミが既に存在しない（404）ものは skipped で整理し、他のエラーは次サイクルに持ち越す。"""
+    rows = con.execute("""SELECT review_id, location, reply FROM reviews
+                          WHERE platform='google' AND reply_status='auto' AND reply!='' LIMIT 25""").fetchall()
+    done = 0
+    for r in rows:
+        rid = r["review_id"]
+        try:
+            post_reply(r["location"], rid, r["reply"])
+            mark_posted(con, rid, r["reply"]); done += 1
+        except Exception as e:
+            if "404" in str(e):
+                con.execute("UPDATE reviews SET reply_status='skipped' WHERE review_id=?", (rid,)); con.commit()
+                print("google auto投稿: 口コミが存在しないため整理:", rid)
+            else:
+                print("google auto投稿失敗:", rid, repr(e))
+    if rows:
+        print(f"google auto消化: {len(rows)}件中 投稿{done}件")
+
 def main():
     con = db()
+    drain_auto(con)
     for store, loc, acct in stores():
         for rv in fetch_reviews(loc, acct):
             rid = rv["reviewId"]
@@ -36,8 +57,12 @@ def main():
                    report_reason=j.get("report_reason", ""),
                    created_at=datetime.datetime.now().isoformat())
             if auto:
-                post_reply(loc, rid, j["reply"], acct)
-                mark_posted(con, rid, j["reply"])
+                try:
+                    post_reply(loc, rid, j["reply"], acct)
+                    mark_posted(con, rid, j["reply"])
+                except Exception as e:
+                    # 投稿に失敗しても 'auto' のまま残す → 次サイクルの drain_auto が再試行（404なら整理）
+                    print("google 新規返信の投稿失敗（次サイクルで再試行）:", rid, repr(e))
 
 if __name__ == "__main__":
     main()
