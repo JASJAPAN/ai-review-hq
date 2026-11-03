@@ -220,6 +220,11 @@ def stats():
             "resent": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='reported' AND IFNULL(report_attempts,1)>=2").fetchone()[0],
             "removed_after_rereport": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='removed' AND IFNULL(report_attempts,1)>=2").fetchone()[0],
             "exhausted_sales_route": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND IFNULL(no_more_angles,0)=1").fetchone()[0],
+            "final_push_pending": con.execute("""SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='reported'
+                AND IFNULL(no_more_angles,0)=1 AND IFNULL(final_push,0)=0 AND IFNULL(report_attempts,1)<5
+                AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'""").fetchone()[0],
+            "final_push_queued": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='approved' AND IFNULL(final_push,0)=1").fetchone()[0],
+            "final_push_declined": con.execute("SELECT COUNT(*) FROM reviews WHERE platform='hotpepper' AND report_status='reported' AND IFNULL(final_push,0)=1").fetchone()[0],
         }
     except Exception:
         pass
@@ -245,6 +250,7 @@ def run():
     def _report_bg():
         rejudge_reports(budget_sec=240, limit=40)
         rejudge_rejected(budget_sec=90, limit=6)
+        rejudge_exhausted(budget_sec=120, limit=8)
     threading.Thread(target=_report_bg, daemon=True).start()
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
@@ -366,6 +372,44 @@ def rejudge_rejected(budget_sec=90, limit=6):
     finally:
         _judge_lock.release()
 
+def rejudge_exhausted(budget_sec=90, limit=6):
+    """新しい条項が組めず打ち切り（no_more_angles=1）になった案件に、最終申し入れの強い報告文で
+    もう1回だけ再送をかける。条項の再利用を認め、トーンを最終版に上げる。処理済みは final_push=1 で
+    二度と対象にしない（成功→approved で送信キューへ、失敗→営業ルート確定）。上限5回の枠内のみ。"""
+    from review_judge import judge_final_push
+    if not _judge_lock.acquire(blocking=False): return 0
+    try:
+        con = db(); _ensure_report_ts(con); t0 = time.time(); n = 0
+        cond = """platform='hotpepper' AND report_status='reported' AND IFNULL(no_more_angles,0)=1
+                  AND IFNULL(final_push,0)=0 AND IFNULL(report_attempts,1) < 5
+                  AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'"""
+        rows = con.execute(f"SELECT * FROM reviews WHERE {cond} ORDER BY IFNULL(reported_at,'') LIMIT ?",
+                           (limit,)).fetchall()
+        for r in rows:
+            if time.time() - t0 > budget_sec: break
+            try:
+                used = r["report_angles"] or r["policy_clause"] or ""
+                j = judge_final_push(r["store"], r["rating"], r["comment"] or "", r["reviewer"] or "",
+                                     prev_reason=r["report_reason"] or "", used_angles=used)
+                attempts = r["report_attempts"] or 1
+                if j.get("report"):
+                    angles = (used + "／最終:" + (j.get("policy_clause") or ""))[:500].strip("／")
+                    con.execute("""UPDATE reviews SET report=1, policy_clause=?, report_reason=?, report_status='approved',
+                                   report_attempts=?, report_angles=?, final_push=1 WHERE review_id=?""",
+                                (j.get("policy_clause", ""), j.get("report_reason", ""), attempts + 1, angles, r["review_id"]))
+                    print(f"最終報告キュー（{attempts + 1}回目・強）: {r['store']} {r['review_id']} 条項: {j.get('policy_clause','')}")
+                else:
+                    con.execute("UPDATE reviews SET final_push=1 WHERE review_id=?", (r["review_id"],))
+                con.commit(); n += 1
+            except Exception as e:
+                print("rejudge_exhausted error:", r["review_id"], repr(e)); time.sleep(2)
+        if rows:
+            left = con.execute(f"SELECT COUNT(*) FROM reviews WHERE {cond}").fetchone()[0]
+            print(f"rejudge_exhausted: {n}件処理（最終報告の残り対象 {left}件）")
+        return n
+    finally:
+        _judge_lock.release()
+
 def _judge_bg():
     # 残りがある限り回し続ける（1回20秒×繰り返し、最大10分）
     for _ in range(30):
@@ -456,7 +500,8 @@ def _ensure_report_ts(con):
                 "ALTER TABLE reviews ADD COLUMN removed_at TEXT",
                 "ALTER TABLE reviews ADD COLUMN report_attempts INTEGER",
                 "ALTER TABLE reviews ADD COLUMN report_angles TEXT",
-                "ALTER TABLE reviews ADD COLUMN no_more_angles INTEGER"):
+                "ALTER TABLE reviews ADD COLUMN no_more_angles INTEGER",
+                "ALTER TABLE reviews ADD COLUMN final_push INTEGER"):
         try: con.execute(ddl)
         except Exception: pass
 

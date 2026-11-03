@@ -68,6 +68,46 @@ def judge_rereport(store, rating, comment, reviewer="", prev_reason="", used_ang
     return d
 
 
+def judge_final_push(store, rating, comment, reviewer="", prev_reason="", used_angles=""):
+    """新しい条項が組めず打ち切りになった案件への最終報告文。条項の再利用を認める代わりに、
+    これまでで最も強い条項を軸に、最終申し入れとして最も強いトーンで組み直す（1案件1回のみ）。
+    返り値: dict(report, policy_clause, report_reason, confidence)"""
+    prompt = f"""あなたは飲食店「{store}」の口コミ運用責任者の代理人です。
+以下の口コミについて、ホットペッパーグルメ運営へ複数回にわたり違反報告を提出してきましたが、いずれも非掲載になっていません。
+今回は最終の申し入れとして、報告文を最も強いトーンで作り直します。
+
+【投稿者】{reviewer or "不明"}
+【星評価】{rating}
+【本文】
+{comment or "（本文なし・星のみ）"}
+
+【これまでに主張した条項】{used_angles or "（記録なし）"}
+【前回の報告文（冒頭）】{(prev_reason or "")[:300]}
+
+{POLICY["hotpepper"]}
+
+作業: 上記の条項のうち本文に最も強く結び付けられるもの（過去に使った条項の再利用も可）を軸に、最終申し入れとしての報告理由（350〜550字）を書いてください。
+- トーン: これまでで最も強い要請。「再三の違反報告にもかかわらず掲載が継続している」という経緯の事実を冒頭で明記し、改めての精査と非掲載措置を強く求める
+- 構成: ①再三報告してきた経緯と今回が重ねての申し入れであること ②該当条項名の明記 ③本文のどの記載がなぜ該当するかを短い引用で断定的に示す ④掲載継続による店舗の実害を具体的に一文 ⑤「掲載基準に照らした再精査と非掲載措置を強く要請いたします」の趣旨で結ぶ
+- 守る一線: 口コミ本文に存在しない事実や推測を根拠にしない（報告済みという経緯は事実なので書いてよい）。投稿者への人格攻撃・法的措置の示唆はしない。丁寧語は維持する（強い=失礼ではない）
+- 前回の報告文のコピーや言い回しの使い回しは禁止。書き出し・構成・結びは変える
+- 本文のどこをどう読んでも、どの条項にも全く結び付けられない場合のみ report=false
+
+出力は次のJSONのみ（前後に説明やコードフェンス不要）:
+{{"report": true/false, "policy_clause": "該当条項名 or 空", "report_reason": "報告理由 or 空", "confidence": 0.0〜1.0}}"""
+    client = anthropic.Anthropic()
+    msg = client.messages.create(model=MODEL, max_tokens=900,
+                                 messages=[{"role": "user", "content": prompt}])
+    text = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        d = json.loads(text)
+    except Exception:
+        return {"report": False, "policy_clause": "", "report_reason": "", "confidence": 0}
+    # 最終申し入れは「条項に結び付く報告文が書けたか」だけで判定（基準は通常より緩める）
+    d["report"] = bool(d.get("report")) and float(d.get("confidence", 0)) >= 0.35 and bool(d.get("report_reason"))
+    return d
+
+
 def judge(platform, store, rating, comment, reviewer="", **extra):
     """返り値: dict(action, reply, report, report_reason, policy_clause, confidence)"""
     profile = STORE_PROFILE.get(store, "")
