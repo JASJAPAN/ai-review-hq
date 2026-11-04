@@ -37,9 +37,30 @@ def drain_auto(con):
     if rows:
         print(f"google auto消化: {len(rows)}件中 投稿{done}件")
 
+def _when(rv):
+    """口コミが投稿された日時（Google の createTime）。無ければ今"""
+    return (rv.get("createTime") or "")[:19] or datetime.datetime.now().isoformat()
+
+def backfill_dates(con):
+    """返信済みも含めた全口コミを見て、created_at を実際の投稿日に直す（以前は取得日時を入れていた）"""
+    from google_reviews import fetch_all_reviews
+    n = 0
+    for store, loc, acct in stores():
+        try:
+            for rv in fetch_all_reviews(loc, acct):
+                ct = (rv.get("createTime") or "")[:19]
+                if ct:
+                    n += con.execute("UPDATE reviews SET created_at=? WHERE review_id=? AND created_at<>?",
+                                     (ct, rv["reviewId"], ct)).rowcount
+        except Exception as e:
+            print("日付の補正に失敗:", store, repr(e))
+    con.commit()
+    if n: print(f"google 口コミの日付を補正: {n}件")
+
 def main():
     con = db()
     drain_auto(con)
+    backfill_dates(con)
     for store, loc, acct in stores():
         for rv in fetch_reviews(loc, acct):
             rid = rv["reviewId"]
@@ -55,7 +76,7 @@ def main():
                    reply=j["reply"], reply_status="auto" if auto else "pending",
                    report=int(j["report"]), policy_clause=j.get("policy_clause", ""),
                    report_reason=j.get("report_reason", ""),
-                   created_at=datetime.datetime.now().isoformat())
+                   created_at=_when(rv))
             if auto:
                 try:
                     post_reply(loc, rid, j["reply"], acct)

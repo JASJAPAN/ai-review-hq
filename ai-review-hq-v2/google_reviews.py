@@ -63,6 +63,19 @@ def fetch_reviews(location, account_id=None):
             return out
 
 
+def fetch_all_reviews(location, account_id=None):
+    """返信済みも含めた全口コミ（日付の補正用）"""
+    account_id = account_id or ACCOUNT_ID
+    url = f"{V4}/accounts/{account_id}/{location}/reviews"
+    out, token = [], None
+    while True:
+        r = requests.get(url, headers=_headers(), params={"pageSize": 50, "pageToken": token}).json()
+        out.extend(r.get("reviews", []))
+        token = r.get("nextPageToken")
+        if not token:
+            return out
+
+
 def post_reply(location, review_id, text, account_id=None):
     account_id = account_id or ACCOUNT_ID or next((s["account"] for s in _state().get("stores", []) if s["location"] == location), "")
     url = f"{V4}/accounts/{account_id}/{location}/reviews/{review_id}/reply"
