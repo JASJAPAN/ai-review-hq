@@ -15,7 +15,7 @@ def _auth():
     sk = os.environ.get("SECRET_KEY", "")
     return bool(sk) and bool(tok) and tok == _h.sha256(("kuchikomi-run:" + sk).encode()).hexdigest()
 
-API_PATHS = ("/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks", "/admin/replies/hp_config", "/admin/replies/recon", "/admin/replies/notify", "/admin/replies/stats")
+API_PATHS = ("/admin/replies/league", "/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks", "/admin/replies/hp_config", "/admin/replies/recon", "/admin/replies/notify", "/admin/replies/stats")
 
 @reviews_bp.before_request
 def _raise_limit():
@@ -29,7 +29,7 @@ def _guard():
     """管理画面は既存アプリのログインセッションを流用。API系はトークン認証"""
     if request.path.startswith(API_PATHS):
         # GET の設定画面/偵察表示と POST の設定保存は管理者セッション、それ以外はトークン
-        if request.headers.get("X-Run-Token") or request.path.endswith(("/run", "/import", "/tasks", "/tasks/done", "/notify", "/stats")):
+        if request.headers.get("X-Run-Token") or request.path.endswith(("/run", "/import", "/tasks", "/tasks/done", "/notify", "/stats", "/league")):
             return None
         if not session.get("admin"): return redirect(url_for("login", next=request.path))
         return None
@@ -238,6 +238,20 @@ def stats():
     except Exception:
         pass
     return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by, "hp_removed_recent": removed_recent, "hp_rereport": rereport}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+
+
+@reviews_bp.route("/league")
+def league_feed():
+    """採算アプリ（第3事業部リーグ）向け：口コミの一覧（本文なし）。X-Run-Token で認証。?since=YYYY-MM-DD"""
+    tok = request.headers.get("X-Run-Token", "")
+    if not (_auth() or (tok and tok == os.environ.get("LEAGUE_TOKEN", "-"))):
+        return jsonify({"error": "unauthorized"}), 401
+    since = (request.args.get("since") or "2026-10-01")[:10]
+    con = db()
+    rows = con.execute(
+        "SELECT review_id, platform, store, rating, created_at, review_url FROM reviews "
+        "WHERE substr(created_at,1,10) >= ? ORDER BY created_at", (since,)).fetchall()
+    return jsonify({"reviews": [dict(r) for r in rows]})
 
 
 @reviews_bp.route("/run", methods=["POST"])
