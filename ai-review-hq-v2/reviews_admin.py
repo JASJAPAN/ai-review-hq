@@ -251,6 +251,8 @@ def run():
         rejudge_reports(budget_sec=240, limit=40)
         rejudge_rejected(budget_sec=90, limit=6)
         rejudge_exhausted(budget_sec=120, limit=8)
+        try: rearm_final_push()
+        except Exception as e: print("rearm_final_push error:", repr(e))
     threading.Thread(target=_report_bg, daemon=True).start()
     from google_reviews import _state
     if not (_state().get("stores") or os.environ.get("REVIEW_STORES")):
@@ -371,6 +373,26 @@ def rejudge_rejected(budget_sec=90, limit=6):
         return n
     finally:
         _judge_lock.release()
+
+def rearm_final_push(con=None):
+    """最終報告（強）を作ったのに、HP側で前回報告の再審査がまだ開いていて報告ボタンが出ず
+    「完了扱い」で戻ってきた案件を、3週間おきに送信キューへ再装填する（文面は作成済みを使い回し、
+    モデルは呼ばない）。再審査が閉じて報告ボタンが出た時点で最終報告が実際に提出される。
+    無限再送にならないよう report_attempts < 8 で打ち切り。"""
+    own = con is None
+    if own: con = db()
+    _ensure_report_ts(con)
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=21)).isoformat()
+    cur = con.execute("""UPDATE reviews SET report_status='approved', report_attempts=IFNULL(report_attempts,1)+1
+                         WHERE platform='hotpepper' AND report_status='reported'
+                         AND IFNULL(final_push,0)=1 AND IFNULL(no_more_angles,0)=1
+                         AND IFNULL(report_attempts,1) < 8 AND IFNULL(report_reason,'') != ''
+                         AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'
+                         AND reported_at < ?""", (cutoff,))
+    con.commit()
+    if cur.rowcount:
+        print(f"最終報告の再装填: {cur.rowcount}件を送信キューへ（前回は再審査中で提出できなかった分）")
+    return cur.rowcount
 
 def rejudge_exhausted(budget_sec=90, limit=6):
     """新しい条項が組めず打ち切り（no_more_angles=1）になった案件に、最終申し入れの強い報告文で
