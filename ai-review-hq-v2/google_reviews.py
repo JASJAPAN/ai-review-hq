@@ -98,6 +98,8 @@ def db():
         report INTEGER DEFAULT 0, policy_clause TEXT, report_reason TEXT,
         report_status TEXT,              -- '' / todo / reported / rejected
         created_at TEXT, posted_at TEXT)""")
+    try: con.execute("ALTER TABLE reviews ADD COLUMN photos INTEGER DEFAULT 0")   # 写真付き口コミ（枚数）
+    except Exception: pass
     return con
 
 
@@ -117,22 +119,6 @@ def mark_posted(con, review_id, reply):
     con.execute("UPDATE reviews SET reply=?, reply_status='posted', posted_at=? WHERE review_id=?",
                 (reply, datetime.datetime.now().isoformat(), review_id))
     con.commit()
-
-
-
-def fetch_customer_media(location, account_id=None):
-    """お客様が投稿した写真の一覧（写真付き口コミの判定用）。attribution.profileName と createTime で口コミと突き合わせる"""
-    account_id = account_id or ACCOUNT_ID
-    url = f"{V4}/accounts/{account_id}/{location}/media/customers"
-    out, token = [], None
-    while True:
-        r = requests.get(url, headers=_headers(), params={"pageSize": 100, "pageToken": token}).json()
-        if "error" in r:
-            raise RuntimeError(str(r["error"])[:300])
-        out.extend(r.get("mediaItems", []))
-        token = r.get("nextPageToken")
-        if not token or len(out) >= 2000:
-            return out
 
 
 if __name__ == "__main__":

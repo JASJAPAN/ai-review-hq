@@ -57,10 +57,33 @@ def backfill_dates(con):
     con.commit()
     if n: print(f"google 口コミの日付を補正: {n}件")
 
+def mark_photos(con):
+    """お客様写真（media/customers）の投稿者名・日時を口コミと突き合わせ、写真付き口コミに photos（枚数）を付ける"""
+    import datetime as _dt
+    from google_reviews import fetch_customer_media
+    def _t(s):
+        try: return _dt.datetime.fromisoformat(str(s)[:19])
+        except Exception: return None
+    n = 0
+    for store, loc, acct in stores():
+        try:
+            media = fetch_customer_media(loc, acct)
+        except Exception as e:
+            print("写真の取得に失敗:", store, repr(e)); continue
+        ms = [((m.get("attribution") or {}).get("profileName") or "", _t(m.get("createTime"))) for m in media]
+        for r in con.execute("SELECT review_id, reviewer, created_at, photos FROM reviews WHERE platform='google' AND store=?", (store,)).fetchall():
+            rt = _t(r["created_at"])
+            k = sum(1 for name, mt in ms if name and name == (r["reviewer"] or "") and (rt is None or mt is None or abs((mt - rt).days) <= 3))
+            if k != (r["photos"] or 0):
+                con.execute("UPDATE reviews SET photos=? WHERE review_id=?", (k, r["review_id"])); n += 1
+    con.commit()
+    if n: print(f"写真付き口コミを更新: {n}件")
+
 def main():
     con = db()
     drain_auto(con)
     backfill_dates(con)
+    mark_photos(con)
     for store, loc, acct in stores():
         for rv in fetch_reviews(loc, acct):
             rid = rv["reviewId"]
