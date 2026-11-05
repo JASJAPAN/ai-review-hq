@@ -641,3 +641,32 @@ fieldset{margin-top:16px}</style>
 @reviews_bp.route("/hp_settings")
 def hp_settings():
     return render_template_string(_HP_TPL, c=_hp_load())
+
+
+@reviews_bp.route("/photos")
+def photos_probe():
+    """写真付き口コミを Google から判定できるかの試し。お客様写真（media/customers）の投稿者名・日時を口コミと突き合わせる"""
+    import datetime as _dt
+    from google_reviews import fetch_customer_media
+    from reply_worker import stores
+    con = db()
+    out = []
+    for store, loc, acct in stores():
+        try:
+            media = fetch_customer_media(loc, acct)
+        except Exception as e:
+            out.append({"store": store, "error": repr(e)[:200]}); continue
+        rows = con.execute("SELECT review_id, reviewer, rating, created_at FROM reviews WHERE platform='google' AND store=? ORDER BY created_at DESC", (store,)).fetchall()
+        def _t(s):
+            try: return _dt.datetime.fromisoformat(str(s)[:19])
+            except Exception: return None
+        ms = [((m.get("attribution") or {}).get("profileName") or "", _t(m.get("createTime")), m.get("thumbnailUrl") or m.get("googleUrl") or "") for m in media]
+        matched = []
+        for r in rows:
+            rt = _t(r["created_at"])
+            hit = [m for m in ms if m[0] and m[0] == (r["reviewer"] or "") and (rt is None or m[1] is None or abs((m[1] - rt).days) <= 3)]
+            if hit:
+                matched.append({"review_id": r["review_id"], "reviewer": r["reviewer"], "rating": r["rating"], "created_at": r["created_at"], "photos": len(hit)})
+        out.append({"store": store, "media": len(media), "reviews": len(rows), "matched": len(matched),
+                    "sample_media": [{"name": m[0], "at": str(m[1])} for m in ms[:5]], "matched_sample": matched[:5]})
+    return jsonify({"stores": out})

@@ -119,6 +119,22 @@ def mark_posted(con, review_id, reply):
     con.commit()
 
 
+
+def fetch_customer_media(location, account_id=None):
+    """お客様が投稿した写真の一覧（写真付き口コミの判定用）。attribution.profileName と createTime で口コミと突き合わせる"""
+    account_id = account_id or ACCOUNT_ID
+    url = f"{V4}/accounts/{account_id}/{location}/media/customers"
+    out, token = [], None
+    while True:
+        r = requests.get(url, headers=_headers(), params={"pageSize": 100, "pageToken": token}).json()
+        if "error" in r:
+            raise RuntimeError(str(r["error"])[:300])
+        out.extend(r.get("mediaItems", []))
+        token = r.get("nextPageToken")
+        if not token or len(out) >= 2000:
+            return out
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "discover":
         discover()
