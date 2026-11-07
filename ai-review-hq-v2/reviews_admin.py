@@ -199,14 +199,21 @@ def google_unreplied():
     """診断用: Google API側で「未返信」として見えている口コミを店別に数え、台帳と突き合わせる（件数のみ）"""
     import json as _j
     from google_reviews import fetch_reviews as _fr, _state
+    q = (request.args.get("store") or "").strip()
+    if not q:
+        return _j.dumps({"usage": "?store=店名の一部 を付けて1店ずつ照会"}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
     con = db(); out = {}
-    for s in _state().get("stores", []):
+    for s in [x for x in _state().get("stores", []) if q in x["name"]][:2]:
         try:
             rvs = _fr(s["location"], s["account"])
             known = sum(1 for rv in rvs if con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rv["reviewId"],)).fetchone())
-            out[s["name"]] = {"api_unreplied": len(rvs), "uchi_torikomi_zumi": known}
+            out[s["name"]] = {"api_unreplied": len(rvs), "uchi_torikomi_zumi": known,
+                              "latest": [{"reviewer": (rv.get("reviewer") or {}).get("displayName", ""),
+                                          "star": rv.get("starRating", ""), "create": (rv.get("createTime") or "")[:10],
+                                          "torikomi": bool(con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rv["reviewId"],)).fetchone())}
+                                         for rv in rvs[:10]]}
         except Exception as e:
-            out[s["name"]] = {"error": str(e)[:120]}
+            out[s["name"]] = {"error": str(e)[:200]}
     return _j.dumps(out, ensure_ascii=False), 200, {"Content-Type": "application/json"}
 
 @reviews_bp.route("/stats")
