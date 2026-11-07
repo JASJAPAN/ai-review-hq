@@ -15,7 +15,7 @@ def _auth():
     sk = os.environ.get("SECRET_KEY", "")
     return bool(sk) and bool(tok) and tok == _h.sha256(("kuchikomi-run:" + sk).encode()).hexdigest()
 
-API_PATHS = ("/admin/replies/league", "/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks", "/admin/replies/hp_config", "/admin/replies/recon", "/admin/replies/notify", "/admin/replies/stats")
+API_PATHS = ("/admin/replies/league", "/admin/replies/run", "/admin/replies/import", "/admin/replies/tasks", "/admin/replies/hp_config", "/admin/replies/recon", "/admin/replies/notify", "/admin/replies/stats", "/admin/replies/google_unreplied")
 
 @reviews_bp.before_request
 def _raise_limit():
@@ -29,7 +29,7 @@ def _guard():
     """管理画面は既存アプリのログインセッションを流用。API系はトークン認証"""
     if request.path.startswith(API_PATHS):
         # GET の設定画面/偵察表示と POST の設定保存は管理者セッション、それ以外はトークン
-        if request.headers.get("X-Run-Token") or request.path.endswith(("/run", "/import", "/tasks", "/tasks/done", "/notify", "/stats", "/league")):
+        if request.headers.get("X-Run-Token") or request.path.endswith(("/run", "/import", "/tasks", "/tasks/done", "/notify", "/stats", "/league", "/google_unreplied")):
             return None
         if not session.get("admin"): return redirect(url_for("login", next=request.path))
         return None
