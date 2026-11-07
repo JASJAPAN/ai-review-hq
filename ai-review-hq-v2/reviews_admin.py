@@ -228,6 +228,15 @@ def stats():
         }
     except Exception:
         pass
+    g_by_store = {}
+    try:
+        for s, st, c in con.execute("SELECT store, reply_status, COUNT(*) FROM reviews WHERE platform='google' GROUP BY store, reply_status"):
+            g_by_store.setdefault(str(s), {})[str(st)] = c
+        # 管理画面で選択中のGoogle連携店舗（取り込み対象）も載せる
+        from google_reviews import _state
+        g_by_store["_連携店舗"] = [x.get("name") for x in _state().get("stores", [])]
+    except Exception:
+        pass
     removed_recent = []
     try:
         for s, rv, rt, pa, ra in con.execute(
@@ -237,7 +246,7 @@ def stats():
             removed_recent.append({"store": s, "reviewer": rv, "rating": rt, "posted_at": pa, "removed_at": ra})
     except Exception:
         pass
-    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by, "hp_removed_recent": removed_recent, "hp_rereport": rereport}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+    return _j.dumps({"total": total, "platform": plats, "reply_status": rs, "report_status_of_reported": reps, "report_by_platform": byplat, "hp_reply_by_store": bystore, "hp_removed_by_store": removed_by, "hp_report_by_store": report_by, "hp_removed_recent": removed_recent, "google_by_store": g_by_store, "hp_rereport": rereport}, ensure_ascii=False), 200, {"Content-Type": "application/json"}
 
 
 @reviews_bp.route("/league")
