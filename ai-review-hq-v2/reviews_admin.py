@@ -194,6 +194,21 @@ def report_reject(review_id):
 
 
 # ---------- Cron / 拡張機能用 API ----------
+@reviews_bp.route("/google_unreplied")
+def google_unreplied():
+    """診断用: Google API側で「未返信」として見えている口コミを店別に数え、台帳と突き合わせる（件数のみ）"""
+    import json as _j
+    from google_reviews import fetch_reviews as _fr, _state
+    con = db(); out = {}
+    for s in _state().get("stores", []):
+        try:
+            rvs = _fr(s["location"], s["account"])
+            known = sum(1 for rv in rvs if con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rv["reviewId"],)).fetchone())
+            out[s["name"]] = {"api_unreplied": len(rvs), "uchi_torikomi_zumi": known}
+        except Exception as e:
+            out[s["name"]] = {"error": str(e)[:120]}
+    return _j.dumps(out, ensure_ascii=False), 200, {"Content-Type": "application/json"}
+
 @reviews_bp.route("/stats")
 def stats():
     """件数だけの診断用（本文は含まない）"""
