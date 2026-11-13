@@ -108,6 +108,45 @@ def judge_final_push(store, rating, comment, reviewer="", prev_reason="", used_a
     return d
 
 
+def judge_factcheck_push(store, rating, comment, reviewer="", prev_reason="", used_angles=""):
+    """最終報告第2弾: 論点を「本文の表現」から「投稿の利用実態」へ切り替える確認請求型。
+    運営にしか確認できない事実（実際の利用の有無）の確認を正面から要請し、
+    確認できない場合の非掲載を求める。店舗側で確認済み等の事実の捏造はしない。"""
+    prompt = f"""あなたは飲食店「{store}」の口コミ運用責任者の代理人です。
+以下の口コミについて、ホットペッパーグルメ運営へ複数回違反報告を提出しましたが、掲載が継続しています。
+今回は論点を完全に切り替えます。これまでのような「本文の表現がどの条項に当たるか」の主張はせず、
+【この投稿が実際の店舗利用に基づくものかどうかの確認を運営に正面から求める】確認請求型の申し入れを書いてください。
+
+【投稿者】{reviewer or "不明"}
+【星評価】{rating}
+【本文】
+{comment or "（本文なし・星のみ）"}
+
+{POLICY["hotpepper"]}
+
+構成（400〜550字）:
+①再三の報告にもかかわらず掲載が継続している経緯と、今回は論点を変えた申し入れであることを明記
+②ガイドライン第一項「実際に利用していない内容」の該当性は、本文の解釈ではなく利用事実の有無によって判断されるべきであり、その確認は予約記録・投稿経路を保有する貴社にしかできない、という論理を立てる
+③本文中に具体的な利用事実（来店日・注文内容・同行者数など）の記述がある場合はその薄さを指摘し、無い場合は「利用を裏付ける記述が一切ない」ことを指摘する（本文にあるものだけを根拠にする）
+④結び: 投稿者の利用実態の確認と、利用が確認できない場合の非掲載措置を強く要請する
+
+守る一線: 店舗側で予約台帳と照合した等、こちらが行っていない確認を行ったとは書かない。投稿者への人格攻撃・法的措置の示唆はしない。丁寧語は維持。前回の報告文の言い回しは使い回さない。
+本文に具体的な利用事実が詳細に書かれており利用実態を疑う余地が全くない場合のみ report=false。
+
+出力は次のJSONのみ（前後に説明やコードフェンス不要）:
+{{"report": true/false, "policy_clause": "実際に利用していない内容（利用実態の確認請求）", "report_reason": "申し入れ文 or 空", "confidence": 0.0〜1.0}}"""
+    client = anthropic.Anthropic()
+    msg = client.messages.create(model=MODEL, max_tokens=900,
+                                 messages=[{"role": "user", "content": prompt}])
+    text = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        d = json.loads(text)
+    except Exception:
+        return {"report": False, "policy_clause": "", "report_reason": "", "confidence": 0}
+    d["report"] = bool(d.get("report")) and float(d.get("confidence", 0)) >= 0.35 and bool(d.get("report_reason"))
+    return d
+
+
 def judge(platform, store, rating, comment, reviewer="", **extra):
     """返り値: dict(action, reply, report, report_reason, policy_clause, confidence)"""
     profile = STORE_PROFILE.get(store, "")

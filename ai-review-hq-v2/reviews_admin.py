@@ -296,6 +296,7 @@ def run():
         rejudge_reports(budget_sec=240, limit=40)
         rejudge_rejected(budget_sec=90, limit=6)
         rejudge_exhausted(budget_sec=120, limit=8)
+        rejudge_factcheck(budget_sec=120, limit=8)
         try: rearm_final_push()
         except Exception as e: print("rearm_final_push error:", repr(e))
     threading.Thread(target=_report_bg, daemon=True).start()
@@ -419,6 +420,43 @@ def rejudge_rejected(budget_sec=90, limit=6):
     finally:
         _judge_lock.release()
 
+def rejudge_factcheck(budget_sec=120, limit=8):
+    """最終報告 第2弾（論点転換）: 本文の条項当てはめではなく「投稿の利用実態の確認請求」へ
+    論点を切り替えた申し入れ文を作り直す。final_push=1（第1弾済み）→ 2 で1件1回のみ。上限12回の枠内。"""
+    from review_judge import judge_factcheck_push
+    if not _judge_lock.acquire(blocking=False): return 0
+    try:
+        con = db(); _ensure_report_ts(con); t0 = time.time(); n = 0
+        cond = """platform='hotpepper' AND report_status IN ('approved','reported') AND IFNULL(final_push,0)=1
+                  AND IFNULL(report_attempts,1) < 12
+                  AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'"""
+        rows = con.execute(f"SELECT * FROM reviews WHERE {cond} ORDER BY IFNULL(reported_at,'') LIMIT ?",
+                           (limit,)).fetchall()
+        for r in rows:
+            if time.time() - t0 > budget_sec: break
+            try:
+                used = r["report_angles"] or r["policy_clause"] or ""
+                j = judge_factcheck_push(r["store"], r["rating"], r["comment"] or "", r["reviewer"] or "",
+                                         prev_reason=r["report_reason"] or "", used_angles=used)
+                attempts = r["report_attempts"] or 1
+                if j.get("report"):
+                    angles = (used + "／確認請求")[:500].strip("／")
+                    con.execute("""UPDATE reviews SET report=1, policy_clause=?, report_reason=?, report_status='approved',
+                                   report_attempts=?, report_angles=?, final_push=2 WHERE review_id=?""",
+                                (j.get("policy_clause", ""), j.get("report_reason", ""), attempts + 1, angles, r["review_id"]))
+                    print(f"確認請求キュー（論点転換・{attempts + 1}回目）: {r['store']} {r['review_id']}")
+                else:
+                    con.execute("UPDATE reviews SET final_push=2 WHERE review_id=?", (r["review_id"],))
+                con.commit(); n += 1
+            except Exception as e:
+                print("rejudge_factcheck error:", r["review_id"], repr(e)); time.sleep(2)
+        if rows:
+            left = con.execute(f"SELECT COUNT(*) FROM reviews WHERE {cond}").fetchone()[0]
+            print(f"rejudge_factcheck: {n}件処理（論点転換の残り対象 {left}件）")
+        return n
+    finally:
+        _judge_lock.release()
+
 def rearm_final_push(con=None):
     """最終報告（強）を作ったのに、HP側で前回報告の再審査がまだ開いていて報告ボタンが出ず
     「完了扱い」で戻ってきた案件を、毎週送信キューへ再装填する（文面は作成済みを使い回し、
@@ -430,7 +468,7 @@ def rearm_final_push(con=None):
     cutoff = (datetime.datetime.now() - datetime.timedelta(days=7)).isoformat()
     cur = con.execute("""UPDATE reviews SET report_status='approved', report_attempts=IFNULL(report_attempts,1)+1
                          WHERE platform='hotpepper' AND report_status='reported'
-                         AND IFNULL(final_push,0)=1 AND IFNULL(no_more_angles,0)=1
+                         AND IFNULL(final_push,0) IN (1,2) AND IFNULL(no_more_angles,0)=1
                          AND IFNULL(report_attempts,1) < 12 AND IFNULL(report_reason,'') != ''
                          AND store NOT LIKE '%うぐいす%' AND store NOT LIKE '%かわせみ%'
                          AND reported_at < ?""", (cutoff,))
