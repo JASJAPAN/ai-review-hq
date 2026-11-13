@@ -315,6 +315,31 @@ def listdiag():
 def main():
     if MODE == "listdiag":
         return listdiag()
+    if MODE == "reportstate":
+        # 目視確認モード: 口コミ一覧を開き、行ごとに「再審査中」表示と報告ボタンの有無を読み上げる
+        accts_ = accounts()
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--disable-gpu"])
+            ctx = browser.new_context(locale="ja-JP", viewport={"width": 1280, "height": 900}); page = ctx.new_page()
+            for acct in accts_[:2]:
+                try:
+                    login(page, acct)
+                    open_review_list(page, unreplied_only=False)
+                    total = {"再審査中": 0, "報告ボタンあり": 0, "その他": 0}
+                    for pg_i in range(4):
+                        for el in page.locator(SEL_ITEM).all():
+                            t = re.sub(r"\s+", " ", el.inner_text())
+                            btn = el.locator("input.policyButton").count()
+                            state = "再審査中" if "再審査" in t else ("報告ボタンあり" if btn else "その他")
+                            total[state] += 1
+                            print(f"[{acct['name']}] p{pg_i+1} {state} | {t[:70]}")
+                        nxt = page.get_by_role("link", name=re.compile("次"))
+                        if not nxt.count(): break
+                        nxt.first.click(); page.wait_for_load_state("networkidle", timeout=60000)
+                    print(f"[{acct['name']}] 集計(先頭4ページ): {total}")
+                except Exception as e:
+                    print(f"[{acct['name']}] reportstate失敗: {repr(e)[:200]}")
+        return
     fix = os.environ.get("HP_FIX_UNREMOVE", "")  # "店名|sinceISO;店名|"（since空=その店の削除記録すべて）
     if fix:
         for ent in fix.split(";"):
