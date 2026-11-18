@@ -87,7 +87,12 @@ def main():
     for store, loc, acct in stores():
         for rv in fetch_reviews(loc, acct):
             rid = rv["reviewId"]
-            if con.execute("SELECT 1 FROM reviews WHERE review_id=?", (rid,)).fetchone():
+            row = con.execute("SELECT reply_status, IFNULL(reply,'') r FROM reviews WHERE review_id=?", (rid,)).fetchone()
+            if row:
+                # 「削除済み」として整理した口コミがまだGoogleに掲載されている＝整理が誤りだったので返信キューへ復帰
+                if row["reply_status"] == "skipped" and row["r"]:
+                    con.execute("UPDATE reviews SET reply_status='auto' WHERE review_id=?", (rid,)); con.commit()
+                    print("google: 整理済み扱いの口コミがまだ掲載中のため返信キューへ復帰:", store, rid)
                 continue
             rating = STAR.get(rv.get("starRating"), 3)
             comment = rv.get("comment", "")
